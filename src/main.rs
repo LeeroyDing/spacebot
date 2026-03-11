@@ -522,12 +522,12 @@ fn cmd_auth(config_path: Option<std::path::PathBuf>, auth_cmd: AuthCommand) -> a
                             eprintln!("Anthropic OAuth: valid (expires in {}m)", expires_min);
                         }
                         eprintln!(
-                            "  access token: {}...",
-                            &creds.access_token[..creds.access_token.floor_char_boundary(20)]
+                            "  access token: <redacted> ({} bytes)",
+                            creds.access_token.len()
                         );
                         eprintln!(
-                            "  refresh token: {}...",
-                            &creds.refresh_token[..creds.refresh_token.floor_char_boundary(20)]
+                            "  refresh token: <redacted> ({} bytes)",
+                            creds.refresh_token.len()
                         );
                         eprintln!(
                             "  credentials file: {}",
