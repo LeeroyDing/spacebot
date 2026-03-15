@@ -1607,17 +1607,6 @@ impl Binding {
                 }
             }
         }
-        // Mattermost channel filter
-        if !self.channel_ids.is_empty() && self.channel == "mattermost" {
-            let message_channel = message
-                .metadata
-                .get("mattermost_channel_id")
-                .and_then(|v| v.as_str());
-            if !self.channel_ids.iter().any(|id| Some(id.as_str()) == message_channel) {
-                return false;
-            }
-        }
-
         true
     }
 
@@ -1916,6 +1905,33 @@ pub(super) fn build_adapter_validation_states(
 fn validate_mattermost_url(url: &str) -> Result<()> {
     let parsed = url::Url::parse(url)
         .map_err(|e| ConfigError::Invalid(format!("invalid mattermost base_url '{url}': {e}")))?;
+
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(ConfigError::Invalid(
+            "mattermost base_url must not contain credentials".to_string(),
+        )
+        .into());
+    }
+    let path = parsed.path();
+    if !path.is_empty() && path != "/" {
+        return Err(ConfigError::Invalid(format!(
+            "mattermost base_url must be an origin URL (no path), got path: {path}"
+        ))
+        .into());
+    }
+    if parsed.query().is_some() {
+        return Err(ConfigError::Invalid(
+            "mattermost base_url must not contain a query string".to_string(),
+        )
+        .into());
+    }
+    if parsed.fragment().is_some() {
+        return Err(ConfigError::Invalid(
+            "mattermost base_url must not contain a fragment".to_string(),
+        )
+        .into());
+    }
+
     match parsed.scheme() {
         "https" => {}
         "http" => {

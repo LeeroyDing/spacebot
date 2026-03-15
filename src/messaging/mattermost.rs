@@ -454,6 +454,7 @@ impl Messaging for MattermostAdapter {
         let ws_client = self.client.clone();
         let ws_base_url = self.base_url.clone();
         let inbound_tx_clone = inbound_tx.clone();
+        let default_team_id = self.default_team_id.clone();
 
         let handle = tokio::spawn(async move {
             let mut retry_delay = WS_RECONNECT_BASE_DELAY;
@@ -525,7 +526,8 @@ impl Messaging for MattermostAdapter {
                                                                 .map(String::from);
                                                             post.channel_type = channel_type;
 
-                                                            let team_id = event.broadcast.team_id.clone();
+                                                            let team_id = event.broadcast.team_id.clone()
+                                                                .or_else(|| default_team_id.as_ref().map(|s| s.to_string()));
                                                             let perms = permissions.load();
 
                                                             let display_name = resolve_user_display_name(
