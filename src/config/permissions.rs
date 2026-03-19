@@ -483,8 +483,7 @@ impl MattermostPermissions {
         let mm_bindings: Vec<&Binding> = bindings
             .iter()
             .filter(|b| {
-                b.channel == "mattermost"
-                    && binding_adapter_selector_matches(b, adapter_selector)
+                b.channel == "mattermost" && binding_adapter_selector_matches(b, adapter_selector)
             })
             .collect();
 

@@ -3111,10 +3111,17 @@ async fn initialize_agents(
     }
 
     // Shared Mattermost permissions (hot-reloadable via file watcher)
-    *mattermost_permissions = config.messaging.mattermost.as_ref().map(|mattermost_config| {
-        let perms = spacebot::config::MattermostPermissions::from_config(mattermost_config, &config.bindings);
-        Arc::new(ArcSwap::from_pointee(perms))
-    });
+    *mattermost_permissions = config
+        .messaging
+        .mattermost
+        .as_ref()
+        .map(|mattermost_config| {
+            let perms = spacebot::config::MattermostPermissions::from_config(
+                mattermost_config,
+                &config.bindings,
+            );
+            Arc::new(ArcSwap::from_pointee(perms))
+        });
 
     if let Some(mattermost_config) = &config.messaging.mattermost
         && mattermost_config.enabled
@@ -3127,7 +3134,9 @@ async fn initialize_agents(
                 mattermost_config.team_id.as_deref().map(Arc::from),
                 mattermost_config.max_attachment_bytes,
                 mattermost_permissions.clone().ok_or_else(|| {
-                    anyhow::anyhow!("mattermost permissions not initialized when mattermost is enabled")
+                    anyhow::anyhow!(
+                        "mattermost permissions not initialized when mattermost is enabled"
+                    )
                 })?,
             ) {
                 Ok(adapter) => {
@@ -3139,7 +3148,11 @@ async fn initialize_agents(
             }
         }
 
-        for instance in mattermost_config.instances.iter().filter(|instance| instance.enabled) {
+        for instance in mattermost_config
+            .instances
+            .iter()
+            .filter(|instance| instance.enabled)
+        {
             if instance.base_url.is_empty() || instance.token.is_empty() {
                 tracing::warn!(adapter = %instance.name, "skipping enabled mattermost instance with missing credentials");
                 continue;

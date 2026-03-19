@@ -443,7 +443,12 @@ pub(super) async fn create_binding(
     if let Some(chat_id) = &request.chat_id {
         binding_table["chat_id"] = toml_edit::value(chat_id.as_str());
     }
-    if let Some(team_id) = request.team_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(team_id) = request
+        .team_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         binding_table["team_id"] = toml_edit::value(team_id);
     }
     if !request.channel_ids.is_empty() {
@@ -695,7 +700,11 @@ pub(super) async fn update_binding(
         .and_then(|b| b.as_array_of_tables_mut())
         .ok_or(StatusCode::NOT_FOUND)?;
 
-    let request_team_id = request.original_team_id.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let request_team_id = request
+        .original_team_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
 
     let mut match_idx: Option<usize> = None;
     for (i, table) in bindings_array.iter().enumerate() {
@@ -735,7 +744,11 @@ pub(super) async fn update_binding(
                 .is_some_and(|v| v == chat_id),
             None => table.get("chat_id").is_none(),
         };
-        let toml_team_id = table.get("team_id").and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty());
+        let toml_team_id = table
+            .get("team_id")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
         let matches_team = request_team_id == toml_team_id;
         if matches_agent
             && matches_channel
@@ -794,7 +807,12 @@ pub(super) async fn update_binding(
     {
         binding["chat_id"] = toml_edit::value(chat_id);
     }
-    if let Some(team_id) = request.team_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(team_id) = request
+        .team_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         binding["team_id"] = toml_edit::value(team_id);
     }
 
@@ -898,7 +916,11 @@ pub(super) async fn delete_binding(
         .and_then(|b| b.as_array_of_tables_mut())
         .ok_or(StatusCode::NOT_FOUND)?;
 
-    let request_team_id = request.team_id.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let request_team_id = request
+        .team_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
 
     let mut match_idx: Option<usize> = None;
     for (i, table) in bindings_array.iter().enumerate() {
@@ -938,7 +960,11 @@ pub(super) async fn delete_binding(
                 .is_some_and(|v| v == chat_id),
             None => table.get("chat_id").is_none(),
         };
-        let toml_team_id = table.get("team_id").and_then(|v: &toml_edit::Item| v.as_str()).map(str::trim).filter(|s| !s.is_empty());
+        let toml_team_id = table
+            .get("team_id")
+            .and_then(|v: &toml_edit::Item| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
         let matches_team = request_team_id == toml_team_id;
         if matches_agent
             && matches_channel

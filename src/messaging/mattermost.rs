@@ -14,10 +14,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{OnceCell, RwLock, mpsc};
-use tokio_tungstenite::{
-    connect_async,
-    tungstenite::Message as WsMessage,
-};
+use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
 use url::Url;
 
 const MAX_MESSAGE_LENGTH: usize = 16_383;
@@ -148,9 +145,7 @@ impl MattermostAdapter {
             .metadata
             .get("mattermost_channel_id")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                anyhow::anyhow!("missing mattermost_channel_id metadata").into()
-            })
+            .ok_or_else(|| anyhow::anyhow!("missing mattermost_channel_id metadata").into())
     }
 
     /// Validate a Mattermost resource ID (post, channel, user, etc.).
@@ -163,7 +158,10 @@ impl MattermostAdapter {
         if id.is_empty() || id.len() > 64 {
             return Err(anyhow::anyhow!("invalid mattermost ID: empty or too long").into());
         }
-        if !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        if !id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
             return Err(anyhow::anyhow!("invalid mattermost ID format: {id}").into());
         }
         Ok(())
@@ -382,7 +380,8 @@ impl MattermostAdapter {
             return Err(anyhow::anyhow!(
                 "mattermost POST /channels/direct failed with status {}: {body}",
                 status.as_u16()
-            ).into());
+            )
+            .into());
         }
         let channel: MattermostChannel = response
             .json()
@@ -419,7 +418,8 @@ impl Messaging for MattermostAdapter {
             return Err(anyhow::anyhow!(
                 "mattermost /users/me failed with status {}: {body}",
                 me_status.as_u16()
-            ).into());
+            )
+            .into());
         }
         let me: MattermostUser = me_response
             .json()
@@ -750,7 +750,8 @@ impl Messaging for MattermostAdapter {
                                 tracing::warn!(%error, "failed to finalize streaming message");
                             }
                         } else {
-                            if let Err(error) = self.create_post(channel_id, &chunk, root_id).await {
+                            if let Err(error) = self.create_post(channel_id, &chunk, root_id).await
+                            {
                                 tracing::warn!(%error, "failed to create overflow chunk for streaming message");
                             }
                         }
@@ -765,15 +766,15 @@ impl Messaging for MattermostAdapter {
                     .metadata
                     .get("mattermost_post_id")
                     .and_then(|v| v.as_str())
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("missing mattermost_post_id metadata")
-                    })?;
+                    .ok_or_else(|| anyhow::anyhow!("missing mattermost_post_id metadata"))?;
                 let emoji_name = sanitize_reaction_name(&emoji);
 
                 let bot_user_id = self
                     .bot_user_id
                     .get()
-                    .ok_or_else(|| anyhow::anyhow!("bot_user_id not initialized; call start() first"))?
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("bot_user_id not initialized; call start() first")
+                    })?
                     .as_ref()
                     .to_string();
 
@@ -834,10 +835,7 @@ impl Messaging for MattermostAdapter {
 
                 if !response.status().is_success() {
                     let body = response.text().await.unwrap_or_default();
-                    return Err(anyhow::anyhow!(
-                        "mattermost file upload failed: {body}"
-                    )
-                    .into());
+                    return Err(anyhow::anyhow!("mattermost file upload failed: {body}").into());
                 }
 
                 let upload: MattermostFileUpload = response
@@ -845,8 +843,7 @@ impl Messaging for MattermostAdapter {
                     .await
                     .context("failed to parse file upload response")?;
 
-                let file_ids: Vec<_> =
-                    upload.file_infos.iter().map(|f| f.id.as_str()).collect();
+                let file_ids: Vec<_> = upload.file_infos.iter().map(|f| f.id.as_str()).collect();
                 let root_id = message
                     .metadata
                     .get("mattermost_root_id")
@@ -857,7 +854,8 @@ impl Messaging for MattermostAdapter {
                             .get(crate::metadata_keys::REPLY_TO_MESSAGE_ID)
                             .and_then(|v| v.as_str())
                     });
-                let post_response = self.client
+                let post_response = self
+                    .client
                     .post(self.api_url("/posts"))
                     .bearer_auth(self.token.as_ref())
                     .json(&serde_json::json!({
@@ -875,12 +873,16 @@ impl Messaging for MattermostAdapter {
                     return Err(anyhow::anyhow!(
                         "mattermost POST /posts (file) failed with status {}: {body}",
                         post_status.as_u16()
-                    ).into());
+                    )
+                    .into());
                 }
             }
 
             _ => {
-                tracing::debug!(?response, "mattermost adapter does not support this response type");
+                tracing::debug!(
+                    ?response,
+                    "mattermost adapter does not support this response type"
+                );
             }
         }
 
@@ -923,10 +925,7 @@ impl Messaging for MattermostAdapter {
             .get_channel_posts(channel_id, before_post_id, capped_limit)
             .await?;
 
-        let bot_id = self
-            .bot_user_id
-            .get()
-            .map(|s| s.as_ref().to_string());
+        let bot_id = self.bot_user_id.get().map(|s| s.as_ref().to_string());
 
         let mut posts_vec: Vec<_> = posts
             .posts
@@ -1037,15 +1036,16 @@ impl Messaging for MattermostAdapter {
                     return Err(anyhow::anyhow!(
                         "mattermost file upload failed with status {}: {body}",
                         upload_status.as_u16()
-                    ).into());
+                    )
+                    .into());
                 }
                 let upload: MattermostFileUpload = upload_response
                     .json()
                     .await
                     .context("failed to parse file upload response")?;
-                let file_ids: Vec<_> =
-                    upload.file_infos.iter().map(|f| f.id.as_str()).collect();
-                let post_response = self.client
+                let file_ids: Vec<_> = upload.file_infos.iter().map(|f| f.id.as_str()).collect();
+                let post_response = self
+                    .client
                     .post(self.api_url("/posts"))
                     .bearer_auth(self.token.as_ref())
                     .json(&serde_json::json!({
@@ -1062,11 +1062,15 @@ impl Messaging for MattermostAdapter {
                     return Err(anyhow::anyhow!(
                         "mattermost create post with file failed with status {}: {body}",
                         post_status.as_u16()
-                    ).into());
+                    )
+                    .into());
                 }
             }
             other => {
-                tracing::debug!(?other, "mattermost broadcast does not support this response type");
+                tracing::debug!(
+                    ?other,
+                    "mattermost broadcast does not support this response type"
+                );
             }
         }
         Ok(())
@@ -1196,8 +1200,8 @@ fn build_message_from_post(
     // Thread-reply-to-bot detection is handled asynchronously in the WS event
     // handler and may upgrade this to true after this function returns.
     let is_dm = post.channel_type.as_deref() == Some("D");
-    let mentions_bot = is_dm
-        || (!bot_username.is_empty() && post.message.contains(&format!("@{bot_username}")));
+    let mentions_bot =
+        is_dm || (!bot_username.is_empty() && post.message.contains(&format!("@{bot_username}")));
     metadata.insert(
         "mattermost_mentions_or_replies_to_bot".into(),
         serde_json::json!(mentions_bot),
@@ -1360,7 +1364,10 @@ async fn resolve_user_display_name(
         }
     };
     let name = user.display_name();
-    cache.write().await.insert(user_id.to_string(), name.clone());
+    cache
+        .write()
+        .await
+        .insert(user_id.to_string(), name.clone());
     Some(name)
 }
 
@@ -1403,7 +1410,10 @@ async fn resolve_channel_name(
         }
     };
     let name = channel.display_name;
-    cache.write().await.insert(channel_id.to_string(), name.clone());
+    cache
+        .write()
+        .await
+        .insert(channel_id.to_string(), name.clone());
     Some(name)
 }
 
@@ -1530,12 +1540,43 @@ mod tests {
         }
     }
 
-    fn build_message_from_mattermost_post(post: &MattermostPost, bot_id: &str, team_id: Option<&str>, perms: &MattermostPermissions) -> Option<InboundMessage> {
-        build_message_from_post(post, "mattermost", bot_id, "botuser", &team_id.map(String::from), perms, None, None)
+    fn build_message_from_mattermost_post(
+        post: &MattermostPost,
+        bot_id: &str,
+        team_id: Option<&str>,
+        perms: &MattermostPermissions,
+    ) -> Option<InboundMessage> {
+        build_message_from_post(
+            post,
+            "mattermost",
+            bot_id,
+            "botuser",
+            &team_id.map(String::from),
+            perms,
+            None,
+            None,
+        )
     }
 
-    fn build_message_from_mattermost_post_named(post: &MattermostPost, bot_id: &str, bot_username: &str, team_id: Option<&str>, perms: &MattermostPermissions, display_name: Option<&str>, channel_name: Option<&str>) -> Option<InboundMessage> {
-        build_message_from_post(post, "mattermost", bot_id, bot_username, &team_id.map(String::from), perms, display_name, channel_name)
+    fn build_message_from_mattermost_post_named(
+        post: &MattermostPost,
+        bot_id: &str,
+        bot_username: &str,
+        team_id: Option<&str>,
+        perms: &MattermostPermissions,
+        display_name: Option<&str>,
+        channel_name: Option<&str>,
+    ) -> Option<InboundMessage> {
+        build_message_from_post(
+            post,
+            "mattermost",
+            bot_id,
+            bot_username,
+            &team_id.map(String::from),
+            perms,
+            display_name,
+            channel_name,
+        )
     }
 
     // --- build_message_from_post ---
@@ -1549,7 +1590,10 @@ mod tests {
     #[test]
     fn non_bot_message_passes_without_filters() {
         let p = post("user1", "chan1", None);
-        assert!(build_message_from_mattermost_post(&p, "bot123", Some("team1"), &no_filters()).is_some());
+        assert!(
+            build_message_from_mattermost_post(&p, "bot123", Some("team1"), &no_filters())
+                .is_some()
+        );
     }
 
     #[test]
@@ -1591,7 +1635,11 @@ mod tests {
         let p = post("user1", "chan1", None);
         let mut cf = HashMap::new();
         cf.insert("team1".into(), vec!["chan1".into()]);
-        let perms = MattermostPermissions { team_filter: None, channel_filter: cf, dm_allowed_users: vec![] };
+        let perms = MattermostPermissions {
+            team_filter: None,
+            channel_filter: cf,
+            dm_allowed_users: vec![],
+        };
         assert!(build_message_from_mattermost_post(&p, "bot", Some("team1"), &perms).is_some());
     }
 
@@ -1600,7 +1648,11 @@ mod tests {
         let p = post("user1", "chan2", None);
         let mut cf = HashMap::new();
         cf.insert("team1".into(), vec!["chan1".into()]);
-        let perms = MattermostPermissions { team_filter: None, channel_filter: cf, dm_allowed_users: vec![] };
+        let perms = MattermostPermissions {
+            team_filter: None,
+            channel_filter: cf,
+            dm_allowed_users: vec![],
+        };
         assert!(build_message_from_mattermost_post(&p, "bot", Some("team1"), &perms).is_none());
     }
 
@@ -1609,7 +1661,11 @@ mod tests {
         let p = post("user1", "chan1", None);
         let mut cf = HashMap::new();
         cf.insert("team1".into(), vec!["chan1".into()]);
-        let perms = MattermostPermissions { team_filter: None, channel_filter: cf, dm_allowed_users: vec![] };
+        let perms = MattermostPermissions {
+            team_filter: None,
+            channel_filter: cf,
+            dm_allowed_users: vec![],
+        };
         // No team_id → can't look up allowed channels → reject
         assert!(build_message_from_mattermost_post(&p, "bot", None, &perms).is_none());
     }
@@ -1622,7 +1678,11 @@ mod tests {
         let p = post("user1", "chan1", None);
         let mut cf = HashMap::new();
         cf.insert("team1".into(), vec!["chan1".into()]);
-        let perms = MattermostPermissions { team_filter: None, channel_filter: cf, dm_allowed_users: vec![] };
+        let perms = MattermostPermissions {
+            team_filter: None,
+            channel_filter: cf,
+            dm_allowed_users: vec![],
+        };
         assert!(build_message_from_mattermost_post(&p, "bot", Some("team2"), &perms).is_none());
     }
 
@@ -1637,47 +1697,73 @@ mod tests {
     #[test]
     fn dm_blocked_when_dm_allowed_users_empty() {
         let p = post("user1", "chan1", Some("D"));
-        assert!(build_message_from_mattermost_post(&p, "bot", Some("team1"), &no_filters()).is_none());
+        assert!(
+            build_message_from_mattermost_post(&p, "bot", Some("team1"), &no_filters()).is_none()
+        );
     }
 
     #[test]
     fn dm_allowed_for_listed_user() {
         let p = post("user1", "chan1", Some("D"));
-        assert!(build_message_from_mattermost_post(&p, "bot", Some("team1"), &dm_perms(&["user1"])).is_some());
+        assert!(
+            build_message_from_mattermost_post(&p, "bot", Some("team1"), &dm_perms(&["user1"]))
+                .is_some()
+        );
     }
 
     #[test]
     fn dm_blocked_for_unlisted_user() {
         let p = post("user2", "chan1", Some("D"));
-        assert!(build_message_from_mattermost_post(&p, "bot", Some("team1"), &dm_perms(&["user1"])).is_none());
+        assert!(
+            build_message_from_mattermost_post(&p, "bot", Some("team1"), &dm_perms(&["user1"]))
+                .is_none()
+        );
     }
 
     #[test]
     fn dm_filter_does_not_affect_channel_messages() {
         // channel messages (type "O") pass even with empty dm_allowed_users
         let p = post("user1", "chan1", Some("O"));
-        assert!(build_message_from_mattermost_post(&p, "bot", Some("team1"), &no_filters()).is_some());
+        assert!(
+            build_message_from_mattermost_post(&p, "bot", Some("team1"), &no_filters()).is_some()
+        );
     }
 
     #[test]
     fn dm_conversation_id_uses_user_id() {
         let p = post("user1", "chan1", Some("D"));
-        let msg = build_message_from_mattermost_post(&p, "bot", Some("team1"), &dm_perms(&["user1"])).unwrap();
-        assert!(msg.conversation_id.contains(":dm:user1"), "expected DM conversation_id, got {}", msg.conversation_id);
+        let msg =
+            build_message_from_mattermost_post(&p, "bot", Some("team1"), &dm_perms(&["user1"]))
+                .unwrap();
+        assert!(
+            msg.conversation_id.contains(":dm:user1"),
+            "expected DM conversation_id, got {}",
+            msg.conversation_id
+        );
     }
 
     #[test]
     fn channel_conversation_id_uses_channel_id() {
         let p = post("user1", "chan1", Some("O"));
-        let msg = build_message_from_mattermost_post(&p, "bot", Some("team1"), &no_filters()).unwrap();
-        assert!(msg.conversation_id.contains(":chan1"), "expected channel conversation_id, got {}", msg.conversation_id);
-        assert!(!msg.conversation_id.contains(":dm:"), "should not be DM, got {}", msg.conversation_id);
+        let msg =
+            build_message_from_mattermost_post(&p, "bot", Some("team1"), &no_filters()).unwrap();
+        assert!(
+            msg.conversation_id.contains(":chan1"),
+            "expected channel conversation_id, got {}",
+            msg.conversation_id
+        );
+        assert!(
+            !msg.conversation_id.contains(":dm:"),
+            "should not be DM, got {}",
+            msg.conversation_id
+        );
     }
 
     #[test]
     fn message_id_metadata_is_set() {
         let p = post("user1", "chan1", None);
-        let msg = build_message_from_mattermost_post(&p, "bot", Some("team1"), &no_filters()).unwrap();
+        let msg =
+            build_message_from_mattermost_post(&p, "bot", Some("team1"), &no_filters()).unwrap();
         assert!(msg.metadata.contains_key(crate::metadata_keys::MESSAGE_ID));
     }
 
@@ -1687,9 +1773,12 @@ mod tests {
     fn mention_sets_flag_when_at_bot_username_in_message() {
         let mut p = post("user1", "chan1", Some("O"));
         p.message = "hey @botuser can you help?".into();
-        let msg = build_message_from_mattermost_post(&p, "bot", Some("team1"), &no_filters()).unwrap();
+        let msg =
+            build_message_from_mattermost_post(&p, "bot", Some("team1"), &no_filters()).unwrap();
         assert_eq!(
-            msg.metadata.get("mattermost_mentions_or_replies_to_bot").and_then(|v| v.as_bool()),
+            msg.metadata
+                .get("mattermost_mentions_or_replies_to_bot")
+                .and_then(|v| v.as_bool()),
             Some(true),
         );
     }
@@ -1697,9 +1786,12 @@ mod tests {
     #[test]
     fn no_mention_flag_when_bot_not_mentioned() {
         let p = post("user1", "chan1", Some("O"));
-        let msg = build_message_from_mattermost_post(&p, "bot", Some("team1"), &no_filters()).unwrap();
+        let msg =
+            build_message_from_mattermost_post(&p, "bot", Some("team1"), &no_filters()).unwrap();
         assert_eq!(
-            msg.metadata.get("mattermost_mentions_or_replies_to_bot").and_then(|v| v.as_bool()),
+            msg.metadata
+                .get("mattermost_mentions_or_replies_to_bot")
+                .and_then(|v| v.as_bool()),
             Some(false),
         );
     }
@@ -1709,9 +1801,20 @@ mod tests {
     #[test]
     fn sender_display_name_set_when_provided() {
         let p = post("user1", "chan1", Some("O"));
-        let msg = build_message_from_mattermost_post_named(&p, "bot", "botuser", Some("team1"), &no_filters(), Some("Alice"), None).unwrap();
+        let msg = build_message_from_mattermost_post_named(
+            &p,
+            "bot",
+            "botuser",
+            Some("team1"),
+            &no_filters(),
+            Some("Alice"),
+            None,
+        )
+        .unwrap();
         assert_eq!(
-            msg.metadata.get("sender_display_name").and_then(|v| v.as_str()),
+            msg.metadata
+                .get("sender_display_name")
+                .and_then(|v| v.as_str()),
             Some("Alice"),
         );
         assert_eq!(msg.formatted_author.as_deref(), Some("Alice"));
@@ -1720,7 +1823,8 @@ mod tests {
     #[test]
     fn sender_display_name_absent_when_not_provided() {
         let p = post("user1", "chan1", Some("O"));
-        let msg = build_message_from_mattermost_post(&p, "bot", Some("team1"), &no_filters()).unwrap();
+        let msg =
+            build_message_from_mattermost_post(&p, "bot", Some("team1"), &no_filters()).unwrap();
         assert!(msg.metadata.get("sender_display_name").is_none());
         assert!(msg.formatted_author.is_none());
     }
@@ -1730,13 +1834,26 @@ mod tests {
     #[test]
     fn channel_name_metadata_set_when_provided() {
         let p = post("user1", "chan1", Some("O"));
-        let msg = build_message_from_mattermost_post_named(&p, "bot", "botuser", Some("team1"), &no_filters(), None, Some("general")).unwrap();
+        let msg = build_message_from_mattermost_post_named(
+            &p,
+            "bot",
+            "botuser",
+            Some("team1"),
+            &no_filters(),
+            None,
+            Some("general"),
+        )
+        .unwrap();
         assert_eq!(
-            msg.metadata.get("mattermost_channel_name").and_then(|v| v.as_str()),
+            msg.metadata
+                .get("mattermost_channel_name")
+                .and_then(|v| v.as_str()),
             Some("general"),
         );
         assert_eq!(
-            msg.metadata.get(crate::metadata_keys::CHANNEL_NAME).and_then(|v| v.as_str()),
+            msg.metadata
+                .get(crate::metadata_keys::CHANNEL_NAME)
+                .and_then(|v| v.as_str()),
             Some("general"),
         );
     }

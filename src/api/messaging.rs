@@ -1331,12 +1331,16 @@ pub(super) async fn create_messaging_instance(
                 "mattermost" => {
                     if let Some(url) = &credentials.mattermost_base_url {
                         if url::Url::parse(url)
-                            .map(|u| u.path() != "/" || u.query().is_some() || u.fragment().is_some())
+                            .map(|u| {
+                                u.path() != "/" || u.query().is_some() || u.fragment().is_some()
+                            })
                             .unwrap_or(true)
                         {
                             return Ok(Json(MessagingInstanceActionResponse {
                                 success: false,
-                                message: format!("invalid mattermost base_url: must be an origin URL (e.g. https://mm.example.com)"),
+                                message: format!(
+                                    "invalid mattermost base_url: must be an origin URL (e.g. https://mm.example.com)"
+                                ),
                             }));
                         }
                         platform_table["base_url"] = toml_edit::value(url.as_str());
@@ -1457,12 +1461,16 @@ pub(super) async fn create_messaging_instance(
                 "mattermost" => {
                     if let Some(url) = &credentials.mattermost_base_url {
                         if url::Url::parse(url)
-                            .map(|u| u.path() != "/" || u.query().is_some() || u.fragment().is_some())
+                            .map(|u| {
+                                u.path() != "/" || u.query().is_some() || u.fragment().is_some()
+                            })
                             .unwrap_or(true)
                         {
                             return Ok(Json(MessagingInstanceActionResponse {
                                 success: false,
-                                message: format!("invalid mattermost base_url: must be an origin URL (e.g. https://mm.example.com)"),
+                                message: format!(
+                                    "invalid mattermost base_url: must be an origin URL (e.g. https://mm.example.com)"
+                                ),
                             }));
                         }
                         instance_table["base_url"] = toml_edit::value(url.as_str());

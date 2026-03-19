@@ -1877,7 +1877,10 @@ pub(super) fn build_adapter_validation_states(
     if let Some(mattermost) = &messaging.mattermost {
         let named_instances = validate_instance_names(
             "mattermost",
-            mattermost.instances.iter().map(|instance| instance.name.as_str()),
+            mattermost
+                .instances
+                .iter()
+                .map(|instance| instance.name.as_str()),
         )?;
         let default_present =
             !mattermost.base_url.trim().is_empty() && !mattermost.token.trim().is_empty();
@@ -2755,7 +2758,6 @@ impl std::fmt::Debug for MattermostInstanceConfig {
     }
 }
 
-
 #[cfg(test)]
 mod mattermost_url_tests {
     use super::validate_mattermost_url;
@@ -2820,4 +2822,3 @@ mod mattermost_url_tests {
         assert!(validate_mattermost_url("https://mattermost.example.com/#section").is_err());
     }
 }
-
