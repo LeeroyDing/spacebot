@@ -51,6 +51,16 @@ struct ActiveStream {
     accumulated_text: String,
 }
 
+struct MessageBuildContext<'a> {
+    runtime_key: &'a str,
+    bot_user_id: &'a str,
+    bot_username: &'a str,
+    team_id: &'a Option<String>,
+    permissions: &'a MattermostPermissions,
+    display_name: Option<&'a str>,
+    channel_name: Option<&'a str>,
+}
+
 impl std::fmt::Debug for MattermostAdapter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MattermostAdapter")
@@ -474,11 +484,11 @@ impl Messaging for MattermostAdapter {
                             "data": {"token": token.as_ref()}
                         });
 
-                        if let Ok(msg) = serde_json::to_string(&auth_msg) {
-                            if write.send(WsMessage::Text(msg.into())).await.is_err() {
-                                tracing::error!(adapter = %runtime_key, "failed to send websocket auth");
-                                continue;
-                            }
+                        if let Ok(msg) = serde_json::to_string(&auth_msg)
+                            && write.send(WsMessage::Text(msg.into())).await.is_err()
+                        {
+                            tracing::error!(adapter = %runtime_key, "failed to send websocket auth");
+                            continue;
                         }
 
                         loop {
@@ -505,7 +515,7 @@ impl Messaging for MattermostAdapter {
                                                         .data
                                                         .get("post")
                                                         .and_then(|v| v.as_str())
-                                                        .map(|s| serde_json::from_str::<MattermostPost>(s));
+                                                        .map(serde_json::from_str::<MattermostPost>);
 
                                                     let post_result = match post_result {
                                                         Some(Ok(p)) => Some(p),
@@ -516,67 +526,69 @@ impl Messaging for MattermostAdapter {
                                                         None => None,
                                                     };
 
-                                                    if let Some(mut post) = post_result {
-                                                        if post.user_id != bot_user_id.as_ref() {
-                                                            // channel_type comes from event.data, not the post struct.
-                                                            let channel_type = event
-                                                                .data
-                                                                .get("channel_type")
-                                                                .and_then(|v| v.as_str())
-                                                                .map(String::from);
-                                                            post.channel_type = channel_type;
+                                                    if let Some(mut post) = post_result
+                                                        && post.user_id != bot_user_id.as_ref()
+                                                    {
+                                                        // channel_type comes from event.data, not the post struct.
+                                                        let channel_type = event
+                                                            .data
+                                                            .get("channel_type")
+                                                            .and_then(|v| v.as_str())
+                                                            .map(String::from);
+                                                        post.channel_type = channel_type;
 
-                                                            let team_id = event.broadcast.team_id.clone()
-                                                                .or_else(|| default_team_id.as_ref().map(|s| s.to_string()));
-                                                            let perms = permissions.load();
+                                                        let team_id = event.broadcast.team_id.clone()
+                                                            .or_else(|| default_team_id.as_ref().map(|s| s.to_string()));
+                                                        let perms = permissions.load();
 
-                                                            let display_name = resolve_user_display_name(
-                                                                &user_identity_cache,
-                                                                &ws_client,
-                                                                token.as_ref(),
-                                                                &ws_base_url,
-                                                                &post.user_id,
-                                                            ).await;
-                                                            let channel_name = resolve_channel_name(
-                                                                &channel_name_cache,
-                                                                &ws_client,
-                                                                token.as_ref(),
-                                                                &ws_base_url,
-                                                                &post.channel_id,
-                                                            ).await;
+                                                        let display_name = resolve_user_display_name(
+                                                            &user_identity_cache,
+                                                            &ws_client,
+                                                            token.as_ref(),
+                                                            &ws_base_url,
+                                                            &post.user_id,
+                                                        ).await;
+                                                        let channel_name = resolve_channel_name(
+                                                            &channel_name_cache,
+                                                            &ws_client,
+                                                            token.as_ref(),
+                                                            &ws_base_url,
+                                                            &post.channel_id,
+                                                        ).await;
 
-                                                            if let Some(mut msg) = build_message_from_post(
-                                                                &post,
-                                                                &runtime_key,
-                                                                &bot_user_id,
-                                                                &bot_username_ws,
-                                                                &team_id,
-                                                                &perms,
-                                                                display_name.as_deref(),
-                                                                channel_name.as_deref(),
-                                                            ) {
-                                                                // Detect thread replies to the bot:
-                                                                // if root_id is set, fetch the root post
-                                                                // and check if the bot authored it.
-                                                                if !post.root_id.is_empty() {
-                                                                    if let Some(root_author) = resolve_root_post_author(
-                                                                        &ws_client,
-                                                                        token.as_ref(),
-                                                                        &ws_base_url,
-                                                                        &post.root_id,
-                                                                    ).await {
-                                                                        if root_author == bot_user_id.as_ref() {
-                                                                            msg.metadata.insert(
-                                                                                "mattermost_mentions_or_replies_to_bot".into(),
-                                                                                serde_json::json!(true),
-                                                                            );
-                                                                        }
-                                                                    }
-                                                                }
-                                                                if inbound_tx_clone.send(msg).await.is_err() {
-                                                                    tracing::debug!("inbound channel closed");
-                                                                    return;
-                                                                }
+                                                        let message_context = MessageBuildContext {
+                                                            runtime_key: &runtime_key,
+                                                            bot_user_id: &bot_user_id,
+                                                            bot_username: &bot_username_ws,
+                                                            team_id: &team_id,
+                                                            permissions: &perms,
+                                                            display_name: display_name.as_deref(),
+                                                            channel_name: channel_name.as_deref(),
+                                                        };
+
+                                                        if let Some(mut msg) =
+                                                            build_message_from_post(&post, &message_context)
+                                                        {
+                                                            // Detect thread replies to the bot:
+                                                            // if root_id is set, fetch the root post
+                                                            // and check if the bot authored it.
+                                                            if !post.root_id.is_empty()
+                                                                && let Some(root_author) = resolve_root_post_author(
+                                                                    &ws_client,
+                                                                    token.as_ref(),
+                                                                    &ws_base_url,
+                                                                    &post.root_id,
+                                                                ).await
+                                                                && root_author == bot_user_id.as_ref()
+                                                            {
+                                                                msg.metadata.insert(
+                                                                    "mattermost_mentions_or_replies_to_bot".into(),
+                                                                    serde_json::json!(true),
+                                                                );
+                                                            }
+                                                            if inbound_tx_clone.send(msg).await.is_err() {
+                                                                tracing::debug!("inbound channel closed");
+                                                                return;
                                                             }
                                                         }
                                                     }
@@ -721,10 +733,10 @@ impl Messaging for MattermostAdapter {
                         None
                     }
                 };
-                if let Some((post_id, display_text)) = pending_edit {
-                    if let Err(error) = self.edit_post(&post_id, &display_text).await {
-                        tracing::warn!(%error, "failed to edit streaming message");
-                    }
+                if let Some((post_id, display_text)) = pending_edit
+                    && let Err(error) = self.edit_post(&post_id, &display_text).await
+                {
+                    tracing::warn!(%error, "failed to edit streaming message");
                 }
             }
 
@@ -749,11 +761,10 @@ impl Messaging for MattermostAdapter {
                             if let Err(error) = self.edit_post(&active.post_id, &chunk).await {
                                 tracing::warn!(%error, "failed to finalize streaming message");
                             }
-                        } else {
-                            if let Err(error) = self.create_post(channel_id, &chunk, root_id).await
-                            {
-                                tracing::warn!(%error, "failed to create overflow chunk for streaming message");
-                            }
+                        } else if let Err(error) =
+                            self.create_post(channel_id, &chunk, root_id).await
+                        {
+                            tracing::warn!(%error, "failed to create overflow chunk for streaming message");
                         }
                     }
                 }
@@ -925,22 +936,24 @@ impl Messaging for MattermostAdapter {
             .get_channel_posts(channel_id, before_post_id, capped_limit)
             .await?;
 
-        let bot_id = self.bot_user_id.get().map(|s| s.as_ref().to_string());
-
-        let mut posts_vec: Vec<_> = posts
-            .posts
-            .into_values()
-            .filter(|p| bot_id.as_deref() != Some(p.user_id.as_str()))
-            .collect();
+        let mut posts_vec: Vec<_> = posts.posts.into_values().collect();
         posts_vec.sort_by_key(|p| p.create_at);
 
+        let bot_id = self.bot_user_id.get().map(|user_id| user_id.as_ref());
         let history: Vec<HistoryMessage> = posts_vec
             .into_iter()
-            .map(|p| HistoryMessage {
-                author: p.user_id,
-                content: p.message,
-                is_bot: false,
-                timestamp: chrono::DateTime::from_timestamp_millis(p.create_at),
+            .map(|post| {
+                let is_bot = bot_id == Some(post.user_id.as_str());
+                HistoryMessage {
+                    author: if is_bot {
+                        "bot".to_string()
+                    } else {
+                        post.user_id
+                    },
+                    content: post.message,
+                    is_bot,
+                    timestamp: chrono::DateTime::from_timestamp_millis(post.create_at),
+                }
             })
             .collect();
 
@@ -1098,32 +1111,28 @@ impl Messaging for MattermostAdapter {
 /// contains `@{bot_username}`).
 fn build_message_from_post(
     post: &MattermostPost,
-    runtime_key: &str,
-    bot_user_id: &str,
-    bot_username: &str,
-    team_id: &Option<String>,
-    permissions: &MattermostPermissions,
-    display_name: Option<&str>,
-    channel_name: Option<&str>,
+    context: &MessageBuildContext<'_>,
 ) -> Option<InboundMessage> {
-    if post.user_id == bot_user_id {
+    if post.user_id == context.bot_user_id {
         return None;
     }
 
-    if let Some(team_filter) = &permissions.team_filter {
+    if let Some(team_filter) = &context.permissions.team_filter {
         // Fail-closed: no team_id in the event → can't verify team → reject.
-        let Some(tid) = team_id else { return None };
+        let Some(tid) = context.team_id else {
+            return None;
+        };
         if !team_filter.contains(tid) {
             return None;
         }
     }
 
-    if !permissions.channel_filter.is_empty() {
+    if !context.permissions.channel_filter.is_empty() {
         // Fail-closed: no team_id or no allowlist entry for this team → reject.
-        let Some(tid) = team_id else { return None };
-        let Some(allowed_channels) = permissions.channel_filter.get(tid) else {
+        let Some(tid) = context.team_id else {
             return None;
         };
+        let allowed_channels = context.permissions.channel_filter.get(tid)?;
         if !allowed_channels.contains(&post.channel_id) {
             return None;
         }
@@ -1131,10 +1140,10 @@ fn build_message_from_post(
 
     // DM filter: if channel_type is "D", enforce dm_allowed_users (fail-closed)
     if post.channel_type.as_deref() == Some("D") {
-        if permissions.dm_allowed_users.is_empty() {
+        if context.permissions.dm_allowed_users.is_empty() {
             return None;
         }
-        if !permissions.dm_allowed_users.contains(&post.user_id) {
+        if !context.permissions.dm_allowed_users.contains(&post.user_id) {
             return None;
         }
     }
@@ -1142,19 +1151,19 @@ fn build_message_from_post(
     // "D" = direct message, "G" = group DM
     let conversation_id = if post.channel_type.as_deref() == Some("D") {
         apply_runtime_adapter_to_conversation_id(
-            runtime_key,
+            context.runtime_key,
             format!(
                 "mattermost:{}:dm:{}",
-                team_id.as_deref().unwrap_or(""),
+                context.team_id.as_deref().unwrap_or(""),
                 post.user_id
             ),
         )
     } else {
         apply_runtime_adapter_to_conversation_id(
-            runtime_key,
+            context.runtime_key,
             format!(
                 "mattermost:{}:{}",
-                team_id.as_deref().unwrap_or(""),
+                context.team_id.as_deref().unwrap_or(""),
                 post.channel_id
             ),
         )
@@ -1172,7 +1181,7 @@ fn build_message_from_post(
         "mattermost_channel_id".into(),
         serde_json::json!(&post.channel_id),
     );
-    if let Some(tid) = team_id {
+    if let Some(tid) = context.team_id {
         metadata.insert("mattermost_team_id".into(), serde_json::json!(tid));
     }
     if !post.root_id.is_empty() {
@@ -1183,12 +1192,12 @@ fn build_message_from_post(
     }
 
     // FN1: sender display name
-    if let Some(dn) = display_name {
+    if let Some(dn) = context.display_name {
         metadata.insert("sender_display_name".into(), serde_json::json!(dn));
     }
 
     // FN2: channel name
-    if let Some(cn) = channel_name {
+    if let Some(cn) = context.channel_name {
         metadata.insert("mattermost_channel_name".into(), serde_json::json!(cn));
         metadata.insert(
             crate::metadata_keys::CHANNEL_NAME.into(),
@@ -1200,20 +1209,21 @@ fn build_message_from_post(
     // Thread-reply-to-bot detection is handled asynchronously in the WS event
     // handler and may upgrade this to true after this function returns.
     let is_dm = post.channel_type.as_deref() == Some("D");
-    let mentions_bot =
-        is_dm || (!bot_username.is_empty() && post.message.contains(&format!("@{bot_username}")));
+    let mentions_bot = is_dm
+        || (!context.bot_username.is_empty()
+            && post.message.contains(&format!("@{}", context.bot_username)));
     metadata.insert(
         "mattermost_mentions_or_replies_to_bot".into(),
         serde_json::json!(mentions_bot),
     );
 
     // FN1: formatted_author — "Display Name" when display name is available
-    let formatted_author = display_name.map(|dn| dn.to_string());
+    let formatted_author = context.display_name.map(|dn| dn.to_string());
 
     Some(InboundMessage {
         id: post.id.clone(),
         source: "mattermost".into(),
-        adapter: Some(runtime_key.to_string()),
+        adapter: Some(context.runtime_key.to_string()),
         conversation_id,
         sender_id: post.user_id.clone(),
         agent_id: None,
@@ -1546,16 +1556,17 @@ mod tests {
         team_id: Option<&str>,
         perms: &MattermostPermissions,
     ) -> Option<InboundMessage> {
-        build_message_from_post(
-            post,
-            "mattermost",
-            bot_id,
-            "botuser",
-            &team_id.map(String::from),
-            perms,
-            None,
-            None,
-        )
+        let team_id = team_id.map(String::from);
+        let context = MessageBuildContext {
+            runtime_key: "mattermost",
+            bot_user_id: bot_id,
+            bot_username: "botuser",
+            team_id: &team_id,
+            permissions: perms,
+            display_name: None,
+            channel_name: None,
+        };
+        build_message_from_post(post, &context)
     }
 
     fn build_message_from_mattermost_post_named(
@@ -1567,16 +1578,17 @@ mod tests {
         display_name: Option<&str>,
         channel_name: Option<&str>,
     ) -> Option<InboundMessage> {
-        build_message_from_post(
-            post,
-            "mattermost",
-            bot_id,
+        let team_id = team_id.map(String::from);
+        let context = MessageBuildContext {
+            runtime_key: "mattermost",
+            bot_user_id: bot_id,
             bot_username,
-            &team_id.map(String::from),
-            perms,
+            team_id: &team_id,
+            permissions: perms,
             display_name,
             channel_name,
-        )
+        };
+        build_message_from_post(post, &context)
     }
 
     // --- build_message_from_post ---
@@ -1825,7 +1837,7 @@ mod tests {
         let p = post("user1", "chan1", Some("O"));
         let msg =
             build_message_from_mattermost_post(&p, "bot", Some("team1"), &no_filters()).unwrap();
-        assert!(msg.metadata.get("sender_display_name").is_none());
+        assert!(!msg.metadata.contains_key("sender_display_name"));
         assert!(msg.formatted_author.is_none());
     }
 

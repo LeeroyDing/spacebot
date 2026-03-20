@@ -1338,9 +1338,8 @@ pub(super) async fn create_messaging_instance(
                         {
                             return Ok(Json(MessagingInstanceActionResponse {
                                 success: false,
-                                message: format!(
-                                    "invalid mattermost base_url: must be an origin URL (e.g. https://mm.example.com)"
-                                ),
+                                message: "invalid mattermost base_url: must be an origin URL (e.g. https://mm.example.com)"
+                                    .to_string(),
                             }));
                         }
                         platform_table["base_url"] = toml_edit::value(url.as_str());
@@ -1468,9 +1467,8 @@ pub(super) async fn create_messaging_instance(
                         {
                             return Ok(Json(MessagingInstanceActionResponse {
                                 success: false,
-                                message: format!(
-                                    "invalid mattermost base_url: must be an origin URL (e.g. https://mm.example.com)"
-                                ),
+                                message: "invalid mattermost base_url: must be an origin URL (e.g. https://mm.example.com)"
+                                    .to_string(),
                             }));
                         }
                         instance_table["base_url"] = toml_edit::value(url.as_str());

@@ -1596,15 +1596,15 @@ impl Binding {
         }
 
         // Mattermost team filter
-        if let Some(team_id) = &self.team_id {
-            if self.channel == "mattermost" {
-                let message_team = message
-                    .metadata
-                    .get("mattermost_team_id")
-                    .and_then(|v| v.as_str());
-                if message_team != Some(team_id.as_str()) {
-                    return false;
-                }
+        if let Some(team_id) = &self.team_id
+            && self.channel == "mattermost"
+        {
+            let message_team = message
+                .metadata
+                .get("mattermost_team_id")
+                .and_then(|v| v.as_str());
+            if message_team != Some(team_id.as_str()) {
+                return false;
             }
         }
         true
