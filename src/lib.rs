@@ -748,6 +748,17 @@ impl OutboundResponse {
             {
                 lines.push(footer.text.trim().to_string());
             }
+            if let Some(author) = &card.author
+                && !author.name.trim().is_empty()
+            {
+                lines.push(author.name.trim().to_string());
+            }
+            if let Some(timestamp) = &card.timestamp
+                && !timestamp.trim().is_empty()
+                && chrono::DateTime::parse_from_rfc3339(timestamp.trim()).is_ok()
+            {
+                lines.push(timestamp.trim().to_string());
+            }
             if !lines.is_empty() {
                 sections.push(lines.join("\n\n"));
             }
@@ -767,6 +778,14 @@ pub struct Card {
     pub fields: Vec<CardField>,
     #[serde(default, deserialize_with = "deserialize_card_footer")]
     pub footer: Option<CardFooter>,
+    /// Small image in the top-right corner of the embed.
+    pub thumbnail: Option<CardImage>,
+    /// Large image at the bottom of the embed.
+    pub image: Option<CardImage>,
+    /// Author bar at the top of the embed.
+    pub author: Option<CardAuthor>,
+    /// ISO 8601 timestamp displayed in the footer area.
+    pub timestamp: Option<String>,
 }
 
 /// A card footer that can be either a plain string or a structured object.
@@ -872,6 +891,20 @@ pub struct CardField {
     pub value: String,
     #[serde(default)]
     pub inline: bool,
+}
+
+/// Image (thumbnail or main image) for a Card.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct CardImage {
+    pub url: String,
+}
+
+/// Author for a Card.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct CardAuthor {
+    pub name: String,
+    pub url: Option<String>,
+    pub icon_url: Option<String>,
 }
 
 /// Container for interactive elements (maps to ActionRows in Discord).
