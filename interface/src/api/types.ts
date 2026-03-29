@@ -42,7 +42,10 @@ export type InstanceOverviewResponse =
 // Channel Types
 // =============================================================================
 
-export type ChannelResponse = components["schemas"]["ChannelResponse"];
+export type ChannelResponse = components["schemas"]["ChannelResponse"] & {
+	response_mode?: string | null;
+	model?: string | null;
+};
 export type ChannelsResponse = components["schemas"]["ChannelsResponse"];
 export type MessagesResponse = components["schemas"]["MessagesResponse"];
 export type TimelineItem = components["schemas"]["TimelineItem"];

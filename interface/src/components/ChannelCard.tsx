@@ -159,6 +159,16 @@ export function ChannelCard({
 						<span className="text-tiny text-ink-faint">
 							{formatTimeAgo(channel.last_activity_at)}
 						</span>
+						{channel.response_mode === "quiet" && (
+							<span className="inline-flex items-center rounded-md bg-amber-500/10 px-1.5 py-0.5 text-tiny font-medium text-amber-400">
+								Quiet
+							</span>
+						)}
+						{channel.response_mode === "mention_only" && (
+							<span className="inline-flex items-center rounded-md bg-red-500/10 px-1.5 py-0.5 text-tiny font-medium text-red-400">
+								Mention Only
+							</span>
+						)}
 						{hasActivity && (
 							<span className="text-tiny text-ink-faint">
 								{workers.length > 0 && `${workers.length}w`}

@@ -312,7 +312,25 @@ export function WebChatPanel({agentId}: WebChatPanelProps) {
 			<div className="relative flex flex-1 flex-col">
 				{/* Header */}
 				<div className="flex items-center justify-between border-b border-app-line px-4 py-2">
-					<h2 className="text-sm font-medium">{agentId}</h2>
+					<div className="flex items-center gap-2">
+						<h2 className="text-sm font-medium">{agentId}</h2>
+						{defaults && (
+							<span className="text-xs text-ink-faint">
+								{defaults.available_models.find((m) => m.id === (settings.model || defaults.model))?.name
+									?? settings.model ?? defaults.model}
+							</span>
+						)}
+						{settings.response_mode === "quiet" && (
+							<span className="rounded-md bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-400">
+								Quiet
+							</span>
+						)}
+						{settings.response_mode === "mention_only" && (
+							<span className="rounded-md bg-red-500/10 px-1.5 py-0.5 text-[10px] font-medium text-red-400">
+								Mention Only
+							</span>
+						)}
+					</div>
 					<Popover open={showSettings} onOpenChange={setShowSettings}>
 						<PopoverTrigger asChild>
 							<Button variant="ghost" size="icon" className="h-7 w-7">

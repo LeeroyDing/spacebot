@@ -19,6 +19,8 @@ pub(super) struct ChannelResponse {
     is_active: bool,
     last_activity_at: String,
     created_at: String,
+    response_mode: Option<String>,
+    model: Option<String>,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -130,16 +132,39 @@ pub(super) async fn list_channels(
 
     sort_channels_newest_first(&mut collected_channels);
 
+    // Read settings from running channel states for response_mode/model display.
+    let channel_states = state.channel_states.read().await;
+
     let all_channels = collected_channels
         .into_iter()
-        .map(|(agent_id, channel)| ChannelResponse {
-            agent_id,
-            id: channel.id,
-            platform: channel.platform,
-            display_name: channel.display_name,
-            is_active: channel.is_active,
-            last_activity_at: channel.last_activity_at.to_rfc3339(),
-            created_at: channel.created_at.to_rfc3339(),
+        .map(|(agent_id, channel)| {
+            let (response_mode, model) = channel_states
+                .get(&channel.id)
+                .map(|cs| {
+                    let settings = &cs.model_overrides;
+                    let mode = match settings.response_mode {
+                        crate::conversation::ResponseMode::Active => None,
+                        crate::conversation::ResponseMode::Quiet => Some("quiet".to_string()),
+                        crate::conversation::ResponseMode::MentionOnly => {
+                            Some("mention_only".to_string())
+                        }
+                    };
+                    let model = settings.resolve_model("channel").map(String::from);
+                    (mode, model)
+                })
+                .unwrap_or((None, None));
+
+            ChannelResponse {
+                agent_id,
+                id: channel.id,
+                platform: channel.platform,
+                display_name: channel.display_name,
+                is_active: channel.is_active,
+                last_activity_at: channel.last_activity_at.to_rfc3339(),
+                created_at: channel.created_at.to_rfc3339(),
+                response_mode,
+                model,
+            }
         })
         .collect();
 
@@ -1047,6 +1072,20 @@ pub(super) async fn update_channel_settings(
             tracing::warn!(%error, %channel_id, "failed to update channel settings");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
+
+    // Notify the running channel to hot-reload its settings.
+    {
+        let channel_states = state.channel_states.read().await;
+        if let Some(channel_state) = channel_states.get(&channel_id) {
+            let _ = channel_state
+                .deps
+                .event_tx
+                .send(crate::ProcessEvent::SettingsUpdated {
+                    agent_id: channel_state.deps.agent_id.clone(),
+                    channel_id: channel_state.channel_id.clone(),
+                });
+        }
+    }
 
     Ok(Json(ChannelSettingsResponse {
         conversation_id: channel_id,

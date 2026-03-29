@@ -304,6 +304,7 @@ pub(super) async fn update_portal_conversation(
     Json(request): Json<UpdatePortalConversationRequest>,
 ) -> Result<Json<PortalConversationResponse>, StatusCode> {
     let store = conversation_store(&state, &request.agent_id)?;
+    let has_settings_update = request.settings.is_some();
     let conversation = store
         .update(
             &request.agent_id,
@@ -318,6 +319,20 @@ pub(super) async fn update_portal_conversation(
             StatusCode::INTERNAL_SERVER_ERROR
         })?
         .ok_or(StatusCode::NOT_FOUND)?;
+
+    // Notify the running channel to hot-reload its settings.
+    if has_settings_update {
+        let channel_states = state.channel_states.read().await;
+        if let Some(channel_state) = channel_states.get(&session_id) {
+            let _ = channel_state
+                .deps
+                .event_tx
+                .send(crate::ProcessEvent::SettingsUpdated {
+                    agent_id: channel_state.deps.agent_id.clone(),
+                    channel_id: channel_state.channel_id.clone(),
+                });
+        }
+    }
 
     Ok(Json(PortalConversationResponse { conversation }))
 }

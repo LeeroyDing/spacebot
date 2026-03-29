@@ -638,6 +638,47 @@ impl Channel {
             .filter(|adapter| !adapter.is_empty())
     }
 
+    /// Re-load settings from the database after a SettingsUpdated event.
+    async fn reload_settings(&mut self) {
+        let agent_id = self.deps.agent_id.to_string();
+        let channel_id = self.id.as_ref();
+
+        // Try portal store first, then channel_settings
+        let new_settings = if channel_id.starts_with("portal:chat:") {
+            let store =
+                crate::conversation::PortalConversationStore::new(self.deps.sqlite_pool.clone());
+            match store.get(&agent_id, channel_id).await {
+                Ok(Some(conv)) => conv.settings,
+                _ => None,
+            }
+        } else {
+            let store =
+                crate::conversation::ChannelSettingsStore::new(self.deps.sqlite_pool.clone());
+            match store.get(&agent_id, channel_id).await {
+                Ok(settings) => settings,
+                Err(_) => None,
+            }
+        };
+
+        let resolved = crate::conversation::settings::ResolvedConversationSettings::resolve(
+            new_settings.as_ref(),
+            None,
+            None,
+        );
+
+        tracing::info!(
+            channel_id = %self.id,
+            response_mode = ?resolved.response_mode,
+            model = ?resolved.model,
+            "settings hot-reloaded"
+        );
+
+        // Update shared state for branches/workers
+        *self.state.worker_context_settings.write().await = resolved.worker_context.clone();
+        self.state.model_overrides = std::sync::Arc::new(resolved.clone());
+        self.resolved_settings = resolved;
+    }
+
     /// Whether the channel is in a non-active response mode (Quiet or MentionOnly).
     fn is_suppressed(&self) -> bool {
         !matches!(self.resolved_settings.response_mode, ResponseMode::Active)
@@ -3007,6 +3048,9 @@ impl Channel {
                     worker_id = %worker_id,
                     "interactive worker result queued for retrigger"
                 );
+            }
+            ProcessEvent::SettingsUpdated { channel_id, .. } if *channel_id == self.id => {
+                self.reload_settings().await;
             }
             _ => {}
         }
