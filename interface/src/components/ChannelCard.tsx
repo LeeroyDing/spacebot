@@ -185,6 +185,7 @@ export function ChannelCard({
 								onClick={(e) => {
 									e.preventDefault();
 									e.stopPropagation();
+									setShowSettings((v) => !v);
 								}}
 								className="rounded p-1 text-ink-faint opacity-0 transition-opacity hover:bg-ink/10 hover:text-ink group-hover/card:opacity-100"
 								title="Channel settings"
