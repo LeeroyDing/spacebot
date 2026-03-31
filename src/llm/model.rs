@@ -175,10 +175,7 @@ impl SpacebotModel {
                 .await
             }
             ApiType::OpenAiResponses => self.call_openai_responses(request, &provider_config).await,
-            ApiType::Gemini => {
-                self.call_openai_compatible(request, "Google Gemini", &provider_config)
-                    .await
-            }
+            ApiType::Gemini => self.call_gemini(request, &provider_config).await,
         }
     }
 
@@ -537,10 +534,7 @@ impl CompletionModel for SpacebotModel {
                 )
                 .await
             }
-            ApiType::Gemini => {
-                self.stream_openai_compatible(request, "Google Gemini", &provider_config)
-                    .await
-            }
+            ApiType::Gemini => self.stream_gemini(request, &provider_config).await,
             ApiType::Anthropic | ApiType::OpenAiResponses => {
                 let response = self.attempt_completion(request).await?;
                 Ok(stream_from_completion_response(response))
@@ -550,6 +544,153 @@ impl CompletionModel for SpacebotModel {
 }
 
 impl SpacebotModel {
+    async fn call_gemini(
+        &self,
+        request: CompletionRequest,
+        provider_config: &ProviderConfig,
+    ) -> Result<completion::CompletionResponse<RawResponse>, CompletionError> {
+        let api_key = provider_config.api_key.as_str();
+        // Ref: https://ai.google.dev/gemini-api/docs/get-started/tutorial?lang=rest#generate-text-from-text-input
+        let gemini_request = crate::llm::gemini::build_gemini_request(
+            self.llm_manager.http_client(),
+            api_key,
+            &provider_config.base_url,
+            &self.model_name,
+            &request,
+            false,
+        );
+
+        let response = gemini_request
+            .send()
+            .await
+            .map_err(|e| CompletionError::ProviderError(e.to_string()))?;
+
+        let status = response.status();
+        let response_text = response.text().await.map_err(|e| {
+            CompletionError::ProviderError(format!("failed to read response body: {e}"))
+        })?;
+
+        let response_body: serde_json::Value =
+            serde_json::from_str(&response_text).map_err(|e| {
+                CompletionError::ProviderError(format!(
+                    "Gemini response ({status}) is not valid JSON: {e}\nBody: {}",
+                    truncate_body(&response_text)
+                ))
+            })?;
+
+        if !status.is_success() {
+            let message = response_body["error"]["message"]
+                .as_str()
+                .unwrap_or("unknown error");
+            return Err(CompletionError::ProviderError(format!(
+                "Gemini API error ({status}): {message}"
+            )));
+        }
+
+        parse_gemini_response(response_body)
+    }
+
+    async fn stream_gemini(
+        &self,
+        request: CompletionRequest,
+        provider_config: &ProviderConfig,
+    ) -> Result<StreamingCompletionResponse<RawStreamingResponse>, CompletionError> {
+        let api_key = provider_config.api_key.as_str();
+        // Ref: https://ai.google.dev/gemini-api/docs/get-started/tutorial?lang=rest#generate-a-text-stream
+        let gemini_request = crate::llm::gemini::build_gemini_request(
+            self.llm_manager.http_client(),
+            api_key,
+            &provider_config.base_url,
+            &self.model_name,
+            &request,
+            true,
+        );
+
+        let response = gemini_request
+            .header("accept-encoding", "identity")
+            .timeout(std::time::Duration::from_secs(STREAM_REQUEST_TIMEOUT_SECS))
+            .send()
+            .await
+            .map_err(|error| CompletionError::ProviderError(error.to_string()))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let response_text = response
+                .text()
+                .await
+                .unwrap_or_else(|error| format!("failed to read error response body: {error}"));
+
+            return Err(CompletionError::ProviderError(format!(
+                "Google Gemini API error ({})",
+                format_api_error_from_response_text(status, &response_text)
+            )));
+        }
+
+        let stream = async_stream::stream! {
+            let mut stream = response.bytes_stream();
+            let mut block_buffer = String::new();
+            let mut full_body = serde_json::json!([]);
+            let mut final_usage = None;
+
+            while let Some(chunk_result) = stream.next().await {
+                let chunk = match chunk_result {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        yield Err(CompletionError::ProviderError(format!(
+                            "Google Gemini stream read failed: {error}"
+                        )));
+                        return;
+                    }
+                };
+
+                let chunk_text = String::from_utf8_lossy(&chunk).to_string();
+                block_buffer.push_str(&chunk_text);
+
+                while let Some(block) = extract_sse_block(&mut block_buffer) {
+                    let Some(data) = extract_sse_data_payload(&block) else {
+                        continue;
+                    };
+                    let data = data.trim();
+                    if data.is_empty() {
+                        continue;
+                    }
+
+                    let event_body = match serde_json::from_str::<serde_json::Value>(data) {
+                        Ok(body) => body,
+                        Err(error) => {
+                            tracing::trace!(%error, payload = %data, "failed to parse Gemini SSE chunk");
+                            continue;
+                        }
+                    };
+
+                    full_body.as_array_mut().unwrap().push(event_body.clone());
+
+                    match process_gemini_stream_event(&event_body) {
+                        Ok((events, usage)) => {
+                            if let Some(usage) = usage {
+                                final_usage = Some(usage);
+                            }
+                            for event in events {
+                                yield Ok(event);
+                            }
+                        }
+                        Err(error) => {
+                            yield Err(error);
+                            return;
+                        }
+                    }
+                }
+            }
+
+            yield Ok(RawStreamingChoice::FinalResponse(RawStreamingResponse {
+                body: full_body,
+                usage: final_usage,
+            }));
+        };
+
+        Ok(StreamingCompletionResponse::stream(Box::pin(stream)))
+    }
+
     async fn call_anthropic(
         &self,
         request: CompletionRequest,
@@ -872,7 +1013,7 @@ impl SpacebotModel {
         let base_url = provider_config.base_url.trim_end_matches('/');
         let endpoint_path = match provider_config.api_type {
             ApiType::OpenAiCompletions | ApiType::OpenAiResponses => "/v1/chat/completions",
-            ApiType::OpenAiChatCompletions | ApiType::Gemini => "/chat/completions",
+            ApiType::OpenAiChatCompletions => "/chat/completions",
             ApiType::Anthropic => {
                 return Err(CompletionError::ProviderError(format!(
                     "{provider_display_name} is configured with anthropic API type, but this call expects an OpenAI-compatible API"
@@ -1312,6 +1453,99 @@ pub fn convert_messages_to_anthropic(messages: &OneOrMany<Message>) -> Vec<serde
             })),
         })
         .collect()
+}
+
+pub fn convert_messages_to_gemini(messages: &OneOrMany<Message>) -> Vec<serde_json::Value> {
+    // Ref: https://ai.google.dev/gemini-api/docs/get-started/tutorial?lang=rest#generate-text-from-text-input
+    let mut converted_messages: Vec<serde_json::Value> = Vec::new();
+
+    for message in messages.iter() {
+        let (role, mut parts) = match message {
+            Message::User { content } => {
+                let parts: Vec<serde_json::Value> = content
+                    .iter()
+                    .filter_map(|c| match c {
+                        UserContent::Text(t) => (!t.text.trim().is_empty())
+                            .then(|| serde_json::json!({"text": t.text})),
+                        UserContent::Image(image) => convert_image_gemini(image),
+                        UserContent::ToolResult(result) => {
+                            Some(serde_json::json!({
+                                "functionResponse": {
+                                    "name": result.id, // name is actually the tool name in Gemini functionResponse
+                                    "response": {
+                                        "result": tool_result_content_to_string(&result.content),
+                                    }
+                                }
+                            }))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                ("user", parts)
+            }
+            Message::Assistant { content, .. } => {
+                let parts: Vec<serde_json::Value> = content
+                    .iter()
+                    .filter_map(|c| match c {
+                        AssistantContent::Text(t) => (!t.text.trim().is_empty())
+                            .then(|| serde_json::json!({"text": t.text})),
+                        AssistantContent::ToolCall(tc) => {
+                            Some(serde_json::json!({
+                                "functionCall": {
+                                    "name": tc.function.name,
+                                    "args": tc.function.arguments,
+                                }
+                            }))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                ("model", parts)
+            }
+            Message::System { content } => ("user", vec![serde_json::json!({"text": content})]),
+        };
+
+        if parts.is_empty() {
+            continue;
+        }
+
+        // Merge with last message if same role
+        if let Some(last_msg) = converted_messages.last_mut() {
+            if last_msg["role"] == role {
+                last_msg["parts"]
+                    .as_array_mut()
+                    .unwrap()
+                    .append(&mut parts);
+                continue;
+            }
+        }
+
+        converted_messages.push(serde_json::json!({
+            "role": role,
+            "parts": parts,
+        }));
+    }
+
+    converted_messages
+}
+
+fn convert_image_gemini(image: &Image) -> Option<serde_json::Value> {
+    match &image.data {
+        DocumentSourceKind::Base64(data) => {
+            let actual_mime = image
+                .media_type
+                .as_ref()
+                .map(|mt| mt.to_mime_type())
+                .unwrap_or("image/jpeg");
+            Some(serde_json::json!({
+                "inlineData": {
+                    "mimeType": actual_mime,
+                    "data": data,
+                }
+            }))
+        }
+        _ => None,
+    }
 }
 
 fn convert_messages_to_openai(messages: &OneOrMany<Message>) -> Vec<serde_json::Value> {
@@ -2365,6 +2599,111 @@ fn make_tool_call(id: String, name: String, arguments: serde_json::Value) -> Too
         signature: None,
         additional_params: None,
     }
+}
+
+fn parse_gemini_response(
+    body: serde_json::Value,
+) -> Result<completion::CompletionResponse<RawResponse>, CompletionError> {
+    let candidate = body["candidates"]
+        .as_array()
+        .and_then(|a| a.first())
+        .ok_or_else(|| {
+            CompletionError::ResponseError("missing candidates in Gemini response".into())
+        })?;
+
+    let parts = candidate["content"]["parts"]
+        .as_array()
+        .ok_or_else(|| {
+            CompletionError::ResponseError("missing parts in Gemini candidate".into())
+        })?;
+
+    let mut assistant_content = Vec::new();
+
+    for part in parts {
+        if let Some(text) = part["text"].as_str() {
+            if !text.trim().is_empty() {
+                assistant_content.push(AssistantContent::Text(Text {
+                    text: text.to_string(),
+                }));
+            }
+        } else if let Some(function_call) = part["functionCall"].as_object() {
+            let name = function_call["name"].as_str().unwrap_or("").to_string();
+            let id = function_call.get("id").and_then(|v| v.as_str()).unwrap_or(&name).to_string();
+            let args = function_call["args"].clone();
+            assistant_content.push(AssistantContent::ToolCall(make_tool_call(
+                id,
+                name,
+                args,
+            )));
+        }
+    }
+
+    let input_tokens = body["usageMetadata"]["promptTokenCount"].as_u64().unwrap_or(0);
+    let output_tokens = body["usageMetadata"]["candidatesTokenCount"]
+        .as_u64()
+        .unwrap_or(0);
+
+    Ok(completion::CompletionResponse {
+        choice: OneOrMany::many(assistant_content).map_err(|_| {
+            CompletionError::ResponseError("empty content in Gemini response".into())
+        })?,
+        usage: completion::Usage {
+            input_tokens,
+            output_tokens,
+            total_tokens: input_tokens + output_tokens,
+            cached_input_tokens: 0,
+        },
+        raw_response: RawResponse { body },
+        message_id: None,
+    })
+}
+
+fn process_gemini_stream_event(
+    event: &serde_json::Value,
+) -> Result<(Vec<RawStreamingChoice<RawStreamingResponse>>, Option<completion::Usage>), CompletionError> {
+    let mut choices = Vec::new();
+    let mut usage = None;
+
+    if let Some(candidate) = event["candidates"]
+        .as_array()
+        .and_then(|a| a.first())
+    {
+        if let Some(parts) = candidate["content"]["parts"].as_array() {
+            for part in parts {
+                if let Some(text) = part["text"].as_str() {
+                    choices.push(RawStreamingChoice::Message(text.to_string()));
+                } else if let Some(function_call) = part["functionCall"].as_object() {
+                    let name = function_call["name"].as_str().unwrap_or("").to_string();
+                    let id = function_call.get("id").and_then(|v| v.as_str()).unwrap_or(&name).to_string();
+                    let args = function_call["args"].clone();
+                    choices.push(RawStreamingChoice::ToolCall(RawStreamingToolCall {
+                        id: id.clone(),
+                        internal_call_id: uuid::Uuid::new_v4().to_string(),
+                        call_id: Some(id),
+                        name: name.to_string(),
+                        arguments: args,
+                        signature: None,
+                        additional_params: None,
+                    }));
+                }
+            }
+        }
+    }
+
+    // Usage is usually only in the last chunk
+    if let Some(usage_meta) = event.get("usageMetadata") {
+        let input_tokens = usage_meta["promptTokenCount"].as_u64().unwrap_or(0);
+        let output_tokens = usage_meta["candidatesTokenCount"].as_u64().unwrap_or(0);
+
+        usage = Some(completion::Usage {
+            input_tokens,
+            output_tokens,
+            total_tokens: input_tokens + output_tokens,
+            cached_input_tokens: 0,
+        });
+    }
+
+    Ok((choices, usage))
 }
 
 fn parse_anthropic_response(
@@ -3767,5 +4106,98 @@ mod tests {
         let msg = format_api_error(status, &body);
         assert!(msg.contains("Google"));
         assert!(msg.contains("invalid schema"));
+    }
+
+    #[test]
+    fn convert_messages_to_gemini_preserves_tool_results() {
+        let messages = OneOrMany::many(vec![
+            Message::User {
+                content: OneOrMany::one(UserContent::text("What is 2+2?")),
+            },
+            Message::Assistant {
+                id: None,
+                content: OneOrMany::one(AssistantContent::tool_call(
+                    "call_1",
+                    "add",
+                    serde_json::json!({"a": 2, "b": 2}),
+                )),
+            },
+            Message::User {
+                content: OneOrMany::one(UserContent::ToolResult(rig::message::ToolResult {
+                    id: "call_1".to_string(),
+                    call_id: None,
+                    content: OneOrMany::one(rig::message::ToolResultContent::text("4")),
+                })),
+            },
+        ])
+        .expect("non-empty message list");
+
+        let converted = convert_messages_to_gemini(&messages);
+        assert_eq!(converted.len(), 3);
+        assert_eq!(converted[0]["role"], "user");
+        assert_eq!(converted[0]["parts"][0]["text"], "What is 2+2?");
+        assert_eq!(converted[1]["role"], "model");
+        assert_eq!(converted[1]["parts"][0]["functionCall"]["name"], "add");
+        assert_eq!(converted[2]["role"], "user");
+        assert_eq!(
+            converted[2]["parts"][0]["functionResponse"]["name"],
+            "call_1"
+        );
+        assert_eq!(
+            converted[2]["parts"][0]["functionResponse"]["response"]["result"],
+            "4"
+        );
+    }
+
+    #[test]
+    fn parse_gemini_response_extracts_text_and_usage() {
+        let body = serde_json::json!({
+            "candidates": [{
+                "content": {
+                    "parts": [{"text": "Hello world"}]
+                },
+                "finishReason": "STOP"
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 5,
+                "candidatesTokenCount": 2,
+                "totalTokenCount": 7
+            }
+        });
+
+        let response = parse_gemini_response(body).expect("valid response");
+        let first = response.choice.first_ref();
+        match first {
+            AssistantContent::Text(text) => assert_eq!(text.text, "Hello world"),
+            _ => panic!("expected text content"),
+        }
+        assert_eq!(response.usage.input_tokens, 5);
+        assert_eq!(response.usage.output_tokens, 2);
+    }
+
+    #[test]
+    fn process_gemini_stream_event_handles_text_and_usage() {
+        let event = serde_json::json!({
+            "candidates": [{
+                "content": {
+                    "parts": [{"text": "Hello"}]
+                }
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 10,
+                "candidatesTokenCount": 1,
+                "totalTokenCount": 11
+            }
+        });
+
+        let (events, usage) = process_gemini_stream_event(&event).expect("valid event");
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            RawStreamingChoice::Message(text) => assert_eq!(text, "Hello"),
+            _ => panic!("expected message event"),
+        }
+        let usage = usage.expect("usage should be present");
+        assert_eq!(usage.input_tokens, 10);
+        assert_eq!(usage.output_tokens, 1);
     }
 }

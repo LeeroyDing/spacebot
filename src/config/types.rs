@@ -185,7 +185,7 @@ pub enum ApiType {
     OpenAiResponses,
     /// Anthropic Messages API (https://api.anthropic.com/v1/messages)
     Anthropic,
-    /// Google Gemini API (https://generativelanguage.googleapis.com/v1beta/openai/chat/completions)
+    /// Google Gemini API (https://generativelanguage.googleapis.com/v1beta/models)
     Gemini,
 }
 
