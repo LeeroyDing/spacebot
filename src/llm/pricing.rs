@@ -100,14 +100,14 @@ fn lookup_pricing(model_name: &str) -> ModelPricing {
             cached_input: per_m(7.5),
         },
 
-        m if m.starts_with("gemini-2.0-flash") || m.starts_with("gemini-2.5-flash") => {
+        m if m.starts_with("gemini-2.0-flash") || m.starts_with("gemini-2.5-flash") || m.starts_with("gemini-3-flash") || m.starts_with("gemini-3.0-flash") || m.starts_with("gemini-3.1-flash") => {
             ModelPricing {
                 input: per_m(0.075),
                 output: per_m(0.30),
                 cached_input: per_m(0.01875),
             }
         }
-        m if m.starts_with("gemini-2.5-pro") || m.starts_with("gemini-2.0-pro") => ModelPricing {
+        m if m.starts_with("gemini-2.5-pro") || m.starts_with("gemini-2.0-pro") || m.starts_with("gemini-3-pro") || m.starts_with("gemini-3.0-pro") || m.starts_with("gemini-3.1-pro") => ModelPricing {
             input: per_m(1.25),
             output: per_m(10.0),
             cached_input: per_m(0.3125),

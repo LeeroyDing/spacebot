@@ -131,6 +131,9 @@ utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid"] }
 utoipa-axum = "0.2"
 utoipa-swagger-ui = { version = "9", features = ["axum"] }
 
+# Gemini
+gemini-rust = "1.7.1"
+
 # Indoc for test fixtures
 indoc = "2"
 arrow-array = "57.3.0"

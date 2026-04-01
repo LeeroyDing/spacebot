@@ -183,7 +183,7 @@ impl SpacebotModel {
             }
             ApiType::OpenAiResponses => self.call_openai_responses(request, &provider_config).await,
             ApiType::Gemini => {
-                self.call_openai_compatible(request, "Google Gemini", &provider_config)
+                crate::llm::gemini::call_gemini_native(&self.llm_manager, &self.model_name, &request)
                     .await
             }
         }
@@ -545,7 +545,7 @@ impl CompletionModel for SpacebotModel {
                 .await
             }
             ApiType::Gemini => {
-                self.stream_openai_compatible(request, "Google Gemini", &provider_config)
+                crate::llm::gemini::stream_gemini_native(&self.llm_manager, &self.model_name, &request)
                     .await
             }
             ApiType::Anthropic => {
