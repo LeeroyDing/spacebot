@@ -141,6 +141,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Lowercase image name
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/spacebot" >> $GITHUB_ENV
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -185,6 +188,9 @@ jobs:
       packages: write
 
     steps:
+      - name: Lowercase image name
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/spacebot" >> $GITHUB_ENV
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -198,10 +204,10 @@ jobs:
       - name: Create multi-arch manifest
         run: |
           docker buildx imagetools create \
-            --tag ${{ env.IMAGE }}:${{ needs.build-docker.outputs.version }} \
-            --tag ${{ env.IMAGE }}:latest \
-            ${{ env.IMAGE }}:build-linux-amd64 \
-            ${{ env.IMAGE }}:build-linux-arm64
+            --tag $IMAGE:${{ needs.build-docker.outputs.version }} \
+            --tag $IMAGE:latest \
+            $IMAGE:build-linux-amd64 \
+            $IMAGE:build-linux-arm64
 
       - name: Log in to Fly registry
         if: github.repository_owner == 'spacedriveapp'
@@ -217,7 +223,7 @@ jobs:
           docker buildx imagetools create \
             --tag registry.fly.io/spacebot-image:${{ needs.build-docker.outputs.version }} \
             --tag registry.fly.io/spacebot-image:latest \
-            ${{ env.IMAGE }}:latest
+            $IMAGE:latest
 
       - name: Roll out to hosted instances
         if: github.repository_owner == 'spacedriveapp'
