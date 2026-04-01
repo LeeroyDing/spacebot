@@ -2675,8 +2675,8 @@ fn parse_gemini_response(
 
     for part in parts {
         if let Some(text) = part["text"].as_str() {
-            if part.get("thought").and_then(|v| v.as_bool()).unwrap_or(false) {
-                // Gemini 2.0 Thinking: reasoning part
+            if part.get("thought").and_then(|v| v.as_bool()).unwrap_or(false) || part.get("thoughtSignature").is_some() {
+                // Gemini 2.0/3.x Thinking: reasoning part
                 let signature = part.get("thoughtSignature").and_then(|v| v.as_str()).map(|s| s.to_string());
                 let mut reasoning = rig::message::Reasoning::new(text);
                 reasoning.content = vec![ReasoningContent::Text {
@@ -2756,7 +2756,7 @@ fn process_gemini_stream_event(
         if let Some(parts) = candidate["content"]["parts"].as_array() {
             for part in parts {
                 if let Some(text) = part["text"].as_str() {
-                    if part.get("thought").and_then(|v| v.as_bool()).unwrap_or(false) {
+                    if part.get("thought").and_then(|v| v.as_bool()).unwrap_or(false) || part.get("thoughtSignature").is_some() {
                         choices.push(RawStreamingChoice::ReasoningDelta {
                             id: None,
                             reasoning: text.to_string(),
