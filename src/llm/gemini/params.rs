@@ -83,6 +83,13 @@ pub fn build_gemini_request(
         body["generationConfig"] = generation_config;
     }
 
+    // Ref: https://ai.google.dev/gemini-api/docs/reasoning?lang=rest
+    if model_id.contains("thinking") {
+        body["thinkingConfig"] = serde_json::json!({
+            "includeThoughts": true,
+        });
+    }
+
     http_client
         .post(&url)
         .header("x-goog-api-key", api_key)

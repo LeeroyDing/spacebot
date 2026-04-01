@@ -682,6 +682,25 @@ impl SpacebotModel {
                 }
             }
 
+            if !block_buffer.trim().is_empty() {
+                if let Some(data) = extract_sse_data_payload(&block_buffer) {
+                    let data = data.trim();
+                    if !data.is_empty() {
+                        if let Ok(event_body) = serde_json::from_str::<serde_json::Value>(data) {
+                            full_body.as_array_mut().unwrap().push(event_body.clone());
+                            if let Ok((events, usage)) = process_gemini_stream_event(&event_body) {
+                                if let Some(usage) = usage {
+                                    final_usage = Some(usage);
+                                }
+                                for event in events {
+                                    yield Ok(event);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             yield Ok(RawStreamingChoice::FinalResponse(RawStreamingResponse {
                 body: full_body,
                 usage: final_usage,
@@ -1489,6 +1508,23 @@ pub fn convert_messages_to_gemini(messages: &OneOrMany<Message>) -> Vec<serde_js
                     .filter_map(|c| match c {
                         AssistantContent::Text(t) => (!t.text.trim().is_empty())
                             .then(|| serde_json::json!({"text": t.text})),
+                        AssistantContent::Reasoning(reasoning) => {
+                            let text = collect_reasoning_text_parts(reasoning).join("\n");
+                            let signature = reasoning.content.iter().find_map(|c| match c {
+                                ReasoningContent::Text { signature, .. } => signature.clone(),
+                                _ => None,
+                            });
+                            (!text.trim().is_empty()).then(|| {
+                                let mut thought_part = serde_json::json!({
+                                    "thought": true,
+                                    "text": text,
+                                });
+                                if let Some(sig) = signature {
+                                    thought_part["thoughtSignature"] = serde_json::json!(sig);
+                                }
+                                thought_part
+                            })
+                        }
                         AssistantContent::ToolCall(tc) => {
                             Some(serde_json::json!({
                                 "functionCall": {
@@ -2604,12 +2640,30 @@ fn make_tool_call(id: String, name: String, arguments: serde_json::Value) -> Too
 fn parse_gemini_response(
     body: serde_json::Value,
 ) -> Result<completion::CompletionResponse<RawResponse>, CompletionError> {
+    if let Some(feedback) = body.get("promptFeedback") {
+        if let Some(reason) = feedback.get("blockReason").and_then(|r| r.as_str()) {
+            return Err(CompletionError::ResponseError(format!(
+                "Gemini prompt blocked: {}",
+                reason
+            )));
+        }
+    }
+
     let candidate = body["candidates"]
         .as_array()
         .and_then(|a| a.first())
         .ok_or_else(|| {
             CompletionError::ResponseError("missing candidates in Gemini response".into())
         })?;
+
+    if let Some(reason) = candidate.get("finishReason").and_then(|r| r.as_str()) {
+        if reason != "STOP" && reason != "MAX_TOKENS" {
+            return Err(CompletionError::ResponseError(format!(
+                "Gemini candidate finish reason: {}",
+                reason
+            )));
+        }
+    }
 
     let parts = candidate["content"]["parts"]
         .as_array()
@@ -2621,14 +2675,25 @@ fn parse_gemini_response(
 
     for part in parts {
         if let Some(text) = part["text"].as_str() {
-            if !text.trim().is_empty() {
+            if part.get("thought").and_then(|v| v.as_bool()).unwrap_or(false) {
+                // Gemini 2.0 Thinking: reasoning part
+                let signature = part.get("thoughtSignature").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let mut reasoning = rig::message::Reasoning::new(text);
+                reasoning.content = vec![ReasoningContent::Text {
+                    text: text.to_string(),
+                    signature,
+                }];
+                assistant_content.push(AssistantContent::Reasoning(reasoning));
+            } else if !text.trim().is_empty() {
                 assistant_content.push(AssistantContent::Text(Text {
                     text: text.to_string(),
                 }));
             }
         } else if let Some(function_call) = part["functionCall"].as_object() {
             let name = function_call["name"].as_str().unwrap_or("").to_string();
-            let id = function_call.get("id").and_then(|v| v.as_str()).unwrap_or(&name).to_string();
+            // Gemini doesn't have native tool-call IDs; always use function name
+            // as the ID to ensure consistent pairing in convert_messages_to_gemini.
+            let id = name.clone();
             let args = function_call["args"].clone();
             assistant_content.push(AssistantContent::ToolCall(make_tool_call(
                 id,
@@ -2639,9 +2704,11 @@ fn parse_gemini_response(
     }
 
     let input_tokens = body["usageMetadata"]["promptTokenCount"].as_u64().unwrap_or(0);
-    let output_tokens = body["usageMetadata"]["candidatesTokenCount"]
+    let visible_output_tokens = body["usageMetadata"]["candidatesTokenCount"]
         .as_u64()
         .unwrap_or(0);
+    let reasoning_tokens = body["usageMetadata"]["thoughtsTokenCount"].as_u64().unwrap_or(0);
+    let output_tokens = visible_output_tokens + reasoning_tokens;
 
     Ok(completion::CompletionResponse {
         choice: OneOrMany::many(assistant_content).map_err(|_| {
@@ -2661,6 +2728,15 @@ fn parse_gemini_response(
 fn process_gemini_stream_event(
     event: &serde_json::Value,
 ) -> Result<(Vec<RawStreamingChoice<RawStreamingResponse>>, Option<completion::Usage>), CompletionError> {
+    if let Some(feedback) = event.get("promptFeedback") {
+        if let Some(reason) = feedback.get("blockReason").and_then(|r| r.as_str()) {
+            return Err(CompletionError::ResponseError(format!(
+                "Gemini prompt blocked: {}",
+                reason
+            )));
+        }
+    }
+
     let mut choices = Vec::new();
     let mut usage = None;
 
@@ -2668,13 +2744,31 @@ fn process_gemini_stream_event(
         .as_array()
         .and_then(|a| a.first())
     {
+        if let Some(reason) = candidate.get("finishReason").and_then(|r| r.as_str()) {
+            if reason != "STOP" && reason != "MAX_TOKENS" {
+                return Err(CompletionError::ResponseError(format!(
+                    "Gemini candidate finish reason: {}",
+                    reason
+                )));
+            }
+        }
+
         if let Some(parts) = candidate["content"]["parts"].as_array() {
             for part in parts {
                 if let Some(text) = part["text"].as_str() {
-                    choices.push(RawStreamingChoice::Message(text.to_string()));
+                    if part.get("thought").and_then(|v| v.as_bool()).unwrap_or(false) {
+                        choices.push(RawStreamingChoice::ReasoningDelta {
+                            id: None,
+                            reasoning: text.to_string(),
+                        });
+                    } else {
+                        choices.push(RawStreamingChoice::Message(text.to_string()));
+                    }
                 } else if let Some(function_call) = part["functionCall"].as_object() {
                     let name = function_call["name"].as_str().unwrap_or("").to_string();
-                    let id = function_call.get("id").and_then(|v| v.as_str()).unwrap_or(&name).to_string();
+                    // Gemini doesn't have native tool-call IDs; always use function name
+                    // as the ID to ensure consistent pairing in convert_messages_to_gemini.
+                    let id = name.clone();
                     let args = function_call["args"].clone();
                     choices.push(RawStreamingChoice::ToolCall(RawStreamingToolCall {
                         id: id.clone(),
@@ -2693,7 +2787,9 @@ fn process_gemini_stream_event(
     // Usage is usually only in the last chunk
     if let Some(usage_meta) = event.get("usageMetadata") {
         let input_tokens = usage_meta["promptTokenCount"].as_u64().unwrap_or(0);
-        let output_tokens = usage_meta["candidatesTokenCount"].as_u64().unwrap_or(0);
+        let visible_output_tokens = usage_meta["candidatesTokenCount"].as_u64().unwrap_or(0);
+        let reasoning_tokens = usage_meta["thoughtsTokenCount"].as_u64().unwrap_or(0);
+        let output_tokens = visible_output_tokens + reasoning_tokens;
 
         usage = Some(completion::Usage {
             input_tokens,
@@ -4199,5 +4295,80 @@ mod tests {
         let usage = usage.expect("usage should be present");
         assert_eq!(usage.input_tokens, 10);
         assert_eq!(usage.output_tokens, 1);
+    }
+
+    #[test]
+    fn convert_messages_to_gemini_handles_reasoning_and_signatures() {
+        let mut reasoning = rig::message::Reasoning::new("I am thinking about it");
+        reasoning.content = vec![ReasoningContent::Text {
+            text: "I am thinking about it".to_string(),
+            signature: Some("sig_123".to_string()),
+        }];
+
+        let messages = OneOrMany::many(vec![Message::Assistant {
+            id: None,
+            content: OneOrMany::one(AssistantContent::Reasoning(reasoning)),
+        }])
+        .expect("non-empty message list");
+
+        let converted = convert_messages_to_gemini(&messages);
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0]["role"], "model");
+        assert_eq!(converted[0]["parts"][0]["thought"], true);
+        assert_eq!(converted[0]["parts"][0]["text"], "I am thinking about it");
+        assert_eq!(converted[0]["parts"][0]["thoughtSignature"], "sig_123");
+    }
+
+    #[test]
+    fn parse_gemini_response_handles_thinking_and_total_usage() {
+        let body = serde_json::json!({
+            "candidates": [{
+                "content": {
+                    "parts": [
+                        {
+                            "thought": true,
+                            "text": "Internal reasoning process",
+                            "thoughtSignature": "sig_abc"
+                        },
+                        {
+                            "text": "Final visible answer"
+                        }
+                    ]
+                },
+                "finishReason": "STOP"
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 10,
+                "candidatesTokenCount": 5,
+                "thoughtsTokenCount": 50,
+                "totalTokenCount": 65
+            }
+        });
+
+        let response = parse_gemini_response(body).expect("valid response");
+        let contents: Vec<_> = response.choice.iter().collect();
+        assert_eq!(contents.len(), 2);
+
+        match &contents[0] {
+            AssistantContent::Reasoning(r) => {
+                match &r.content[0] {
+                    ReasoningContent::Text { text, signature } => {
+                        assert_eq!(text, "Internal reasoning process");
+                        assert_eq!(signature.as_deref(), Some("sig_abc"));
+                    }
+                    _ => panic!("expected text reasoning content"),
+                }
+            }
+            _ => panic!("expected reasoning content at index 0"),
+        }
+
+        match &contents[1] {
+            AssistantContent::Text(t) => assert_eq!(t.text, "Final visible answer"),
+            _ => panic!("expected text content at index 1"),
+        }
+
+        assert_eq!(response.usage.input_tokens, 10);
+        assert_eq!(response.usage.output_tokens, 55); // 5 + 50
+        assert_eq!(response.usage.total_tokens, 65);
     }
 }
