@@ -1186,6 +1186,7 @@ pub(super) async fn get_provider_config(
     tag = "providers",
 )]
 pub(super) async fn test_provider_model(
+    State(state): State<Arc<ApiState>>,
     Json(request): Json<ProviderModelTestRequest>,
 ) -> Result<Json<ProviderModelTestResponse>, StatusCode> {
 	let normalized_provider = request.provider.trim().to_lowercase();
@@ -1204,15 +1205,46 @@ pub(super) async fn test_provider_model(
 		}));
 	}
 
-    if request.api_key.trim().is_empty() {
-        return Ok(Json(ProviderModelTestResponse {
-            success: false,
-            message: "API key cannot be empty".to_string(),
-            provider: request.provider,
-            model: request.model,
-            sample: None,
-        }));
-    }
+    // Determine the API key to use
+    let api_key_to_use = if request.api_key.trim().is_empty() {
+        if normalized_provider == "azure" {
+            // For Azure, try to use the existing stored key from config
+            let config_path = state.config_path.read().await.clone();
+            if config_path.exists() {
+                let content = tokio::fs::read_to_string(&config_path).await.ok();
+                if let Some(doc) = content.and_then(|c| c.parse::<toml_edit::DocumentMut>().ok()) {
+                    doc.get("llm")
+                        .and_then(|llm| llm.get("provider"))
+                        .and_then(|provider| provider.get("azure"))
+                        .and_then(|azure| azure.get("api_key"))
+                        .and_then(|v| v.as_str())
+                        .map(String::from)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        Some(request.api_key.trim().to_string())
+    };
+
+    // If no key found, return error
+    let api_key = match api_key_to_use {
+        Some(key) => key,
+        None => {
+            return Ok(Json(ProviderModelTestResponse {
+                success: false,
+                message: "API key is required but not provided".to_string(),
+                provider: request.provider,
+                model: request.model,
+                sample: None,
+            }));
+        }
+    };
 
     if normalized_model.is_empty() {
         return Ok(Json(ProviderModelTestResponse {
@@ -1314,7 +1346,7 @@ pub(super) async fn test_provider_model(
                     crate::config::ProviderConfig {
                         api_type: crate::config::ApiType::Azure,
                         base_url: base_url.trim().to_string(),
-                        api_key: request.api_key.trim().to_string(),
+                        api_key: api_key.trim().to_string(),
                         name: None,
                         use_bearer_auth: false,
                         extra_headers: Vec::new(),
@@ -1362,7 +1394,7 @@ pub(super) async fn test_provider_model(
         };
     }
 
-    let llm_config = build_test_llm_config(&normalized_provider, request.api_key.trim());
+    let llm_config = build_test_llm_config(&normalized_provider, api_key.trim());
     let llm_manager = match crate::llm::LlmManager::new(llm_config).await {
         Ok(manager) => Arc::new(manager),
         Err(error) => {
