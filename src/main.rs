@@ -183,6 +183,39 @@ struct ActiveChannel {
     _outbound_handle: tokio::task::JoinHandle<()>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ActiveChannelKey {
+    agent_id: String,
+    conversation_id: String,
+}
+
+impl ActiveChannelKey {
+    fn new(agent_id: impl Into<String>, conversation_id: impl Into<String>) -> Self {
+        Self {
+            agent_id: agent_id.into(),
+            conversation_id: conversation_id.into(),
+        }
+    }
+}
+
+/// Maximum number of deferred messages per channel before oldest are dropped.
+const DEFERRED_INJECTION_CAP: usize = 64;
+
+fn queue_deferred_injection(
+    deferred_injections: &mut HashMap<ActiveChannelKey, Vec<spacebot::InboundMessage>>,
+    injection: spacebot::ChannelInjection,
+) {
+    let key = ActiveChannelKey::new(injection.agent_id, injection.conversation_id);
+    let queue = deferred_injections.entry(key).or_default();
+    if queue.len() >= DEFERRED_INJECTION_CAP {
+        tracing::warn!(
+            "deferred injection queue at capacity ({DEFERRED_INJECTION_CAP}), dropping oldest message"
+        );
+        queue.remove(0);
+    }
+    queue.push(injection.message);
+}
+
 #[derive(Debug, serde::Serialize)]
 struct BackfillTranscriptEntry {
     role: String,
@@ -1821,8 +1854,10 @@ async fn run(
         tracing::info!(pid = std::process::id(), "spacebot daemon started");
     }
 
-    // Active conversation channels: conversation_id -> ActiveChannel
-    let mut active_channels: HashMap<String, ActiveChannel> = HashMap::new();
+    // Active conversation channels keyed by their owning agent and conversation.
+    let mut active_channels: HashMap<ActiveChannelKey, ActiveChannel> = HashMap::new();
+    let mut deferred_injections: HashMap<ActiveChannelKey, Vec<spacebot::InboundMessage>> =
+        HashMap::new();
 
     // Resume idle interactive workers that survived the restart.
     // For each idle worker, pre-create the channel if needed and spawn
@@ -1874,7 +1909,10 @@ async fn run(
             for (conversation_id, workers) in by_channel {
                 // Ensure the channel exists. If it's already in active_channels
                 // (unlikely at startup), use its state. Otherwise, pre-create it.
-                if !active_channels.contains_key(&conversation_id) {
+                let channel_key =
+                    ActiveChannelKey::new(agent_id.to_string(), conversation_id.clone());
+                #[allow(clippy::map_entry)] // 250-line block is clearer with contains_key+insert
+                if !active_channels.contains_key(&channel_key) {
                     // First pass: retire any workers whose sessions can't be
                     // reconnected. Only create the channel if at least one
                     // worker has a chance of resuming.
@@ -2107,7 +2145,7 @@ async fn run(
                     });
 
                     active_channels.insert(
-                        conversation_id.clone(),
+                        channel_key,
                         ActiveChannel {
                             message_tx: channel_tx,
                             _outbound_handle: outbound_handle,
@@ -2155,9 +2193,10 @@ async fn run(
                 };
 
                 let conversation_id = message.conversation_id.clone();
+                let channel_key = ActiveChannelKey::new(agent_id.to_string(), conversation_id.clone());
 
                 // Find or create a channel for this conversation
-                if !active_channels.contains_key(&conversation_id) {
+                if !active_channels.contains_key(&channel_key) {
                     let Some(agent) = agents.get(&agent_id) else {
                         tracing::warn!(
                             agent_id = %agent_id,
@@ -2349,7 +2388,7 @@ async fn run(
                         );
                     });
 
-                    active_channels.insert(conversation_id.clone(), ActiveChannel {
+                    active_channels.insert(channel_key.clone(), ActiveChannel {
                         message_tx: channel_tx,
                         _outbound_handle: outbound_handle,
                     });
@@ -2362,7 +2401,41 @@ async fn run(
                 }
 
                 // Forward the message to the channel
-                if let Some(active) = active_channels.get(&conversation_id) {
+                if let Some(message_tx) = active_channels
+                    .get(&channel_key)
+                    .map(|active| active.message_tx.clone())
+                {
+                    let mut pending_delivery_failed = false;
+                    if let Some(pending_injections) = deferred_injections.remove(&channel_key) {
+                        let mut remaining_injections = Vec::new();
+                        let mut pending_injections = pending_injections.into_iter();
+
+                        while let Some(injection_message) = pending_injections.next() {
+                            if let Err(error) = message_tx.send(injection_message).await {
+                                tracing::warn!(
+                                    conversation_id = %conversation_id,
+                                    agent_id = %agent_id,
+                                    "failed to deliver deferred injected message to channel"
+                                );
+                                remaining_injections.push(error.0);
+                                remaining_injections.extend(pending_injections);
+                                // Also re-queue the current inbound message so it isn't lost
+                                remaining_injections.push(message.clone());
+                                deferred_injections
+                                    .entry(channel_key.clone())
+                                    .or_default()
+                                    .extend(remaining_injections);
+                                active_channels.remove(&channel_key);
+                                pending_delivery_failed = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if pending_delivery_failed {
+                        continue;
+                    }
+
                     // Emit inbound message to SSE clients
                     let sender_name = message.formatted_author.clone().or_else(|| {
                         message
@@ -2379,13 +2452,13 @@ async fn run(
                         text: message.content.to_string(),
                     }).ok();
 
-                    if let Err(error) = active.message_tx.send(message).await {
+                    if let Err(error) = message_tx.send(message).await {
                         tracing::error!(
                             conversation_id = %conversation_id,
                             %error,
                             "failed to forward message to channel"
                         );
-                        active_channels.remove(&conversation_id);
+                        active_channels.remove(&channel_key);
                     }
                 }
             }
@@ -2405,14 +2478,24 @@ async fn run(
             // Cross-agent message injection (e.g. delegated task completion retrigger).
             // Forwards the injected message to the target channel if it exists.
             Some(injection) = injection_rx.recv() => {
-                if let Some(active) = active_channels.get(&injection.conversation_id) {
-                    if let Err(error) = active.message_tx.send(injection.message).await {
+                let channel_key = ActiveChannelKey::new(
+                    injection.agent_id.clone(),
+                    injection.conversation_id.clone(),
+                );
+
+                if let Some(message_tx) = active_channels
+                    .get(&channel_key)
+                    .map(|active| active.message_tx.clone())
+                {
+                    if let Err(error) = message_tx.send(injection.message.clone()).await {
                         tracing::warn!(
                             %error,
                             conversation_id = %injection.conversation_id,
                             agent_id = %injection.agent_id,
                             "failed to forward injected message to channel"
                         );
+                        active_channels.remove(&channel_key);
+                        queue_deferred_injection(&mut deferred_injections, injection);
                     } else {
                         tracing::info!(
                             conversation_id = %injection.conversation_id,
@@ -2421,10 +2504,11 @@ async fn run(
                         );
                     }
                 } else {
+                    queue_deferred_injection(&mut deferred_injections, injection);
                     tracing::info!(
-                        conversation_id = %injection.conversation_id,
-                        agent_id = %injection.agent_id,
-                        "injection target channel not active, notification will be delivered on next message"
+                        conversation_id = %channel_key.conversation_id,
+                        agent_id = %channel_key.agent_id,
+                        "injection target channel not active, notification deferred until that exact channel resumes"
                     );
                 }
             }
@@ -3696,7 +3780,10 @@ async fn initialize_agents(
 
 #[cfg(test)]
 mod tests {
-    use super::wait_for_startup_warmup_tasks;
+    use super::{ActiveChannelKey, queue_deferred_injection, wait_for_startup_warmup_tasks};
+    use chrono::Utc;
+    use spacebot::{ChannelInjection, InboundMessage, MessageContent};
+    use std::collections::HashMap;
     use std::future::pending;
     use std::sync::Arc;
     use std::time::Duration;
@@ -3757,6 +3844,43 @@ mod tests {
         assert!(
             started.elapsed() < Duration::from_millis(80),
             "startup warmup timeout should return without waiting for non-cooperative task"
+        );
+    }
+
+    #[test]
+    fn deferred_injections_are_scoped_to_exact_agent_and_channel() {
+        let mut deferred_injections: HashMap<ActiveChannelKey, Vec<InboundMessage>> =
+            HashMap::new();
+        let injection = ChannelInjection {
+            conversation_id: "discord:dm:42".to_string(),
+            agent_id: "agent-a".to_string(),
+            message: InboundMessage {
+                id: "inj-1".to_string(),
+                source: "system".to_string(),
+                adapter: None,
+                conversation_id: "discord:dm:42".to_string(),
+                sender_id: "system".to_string(),
+                agent_id: Some(Arc::from("agent-a")),
+                content: MessageContent::Text("secret cron output".to_string()),
+                timestamp: Utc::now(),
+                metadata: HashMap::new(),
+                formatted_author: None,
+            },
+        };
+
+        queue_deferred_injection(&mut deferred_injections, injection);
+
+        assert_eq!(
+            deferred_injections
+                .get(&ActiveChannelKey::new("agent-a", "discord:dm:42"))
+                .map(Vec::len),
+            Some(1)
+        );
+        assert!(
+            !deferred_injections.contains_key(&ActiveChannelKey::new("agent-a", "discord:123:456"))
+        );
+        assert!(
+            !deferred_injections.contains_key(&ActiveChannelKey::new("agent-b", "discord:dm:42"))
         );
     }
 }
