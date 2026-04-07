@@ -53,9 +53,12 @@ export function RecentActivityCard() {
 		queryKey: ["dashboard-workers", agentIds],
 		queryFn: async () => {
 			const results = await Promise.all(
-				agentIds.map((id) => api.workersList(id, { limit: 10 }).catch(() => null)),
+				agentIds.map(async (id) => {
+					const r = await api.workersList(id, { limit: 10 }).catch(() => null);
+					return (r?.workers ?? []).map((w) => ({ ...w, _agent_id: id }));
+				}),
 			);
-			return results.flatMap((r) => r?.workers ?? []);
+			return results.flat();
 		},
 		enabled: agentIds.length > 0,
 		staleTime: 30_000,
@@ -65,9 +68,12 @@ export function RecentActivityCard() {
 		queryKey: ["dashboard-cortex", agentIds],
 		queryFn: async () => {
 			const results = await Promise.all(
-				agentIds.map((id) => api.cortexEvents(id, { limit: 10 }).catch(() => null)),
+				agentIds.map(async (id) => {
+					const r = await api.cortexEvents(id, { limit: 10 }).catch(() => null);
+					return (r?.events ?? []).map((e) => ({ ...e, _agent_id: id }));
+				}),
 			);
-			return results.flatMap((r) => r?.events ?? []);
+			return results.flat();
 		},
 		enabled: agentIds.length > 0,
 		staleTime: 30_000,
@@ -84,20 +90,20 @@ export function RecentActivityCard() {
 		}));
 
 	const workerItems: ActivityItem[] = (workersData ?? [])
-		.filter((w: WorkerListItem) => w.status === "completed" || w.status === "failed")
-		.map((w: WorkerListItem) => ({
+		.filter((w) => w.status === "completed" || w.status === "failed")
+		.map((w) => ({
 			id: `w-${w.id}`,
 			type: "worker_done" as const,
 			title: `${w.status === "completed" ? "Completed" : "Failed"}: ${w.task}`,
-			agent: undefined,
+			agent: w._agent_id,
 			timestamp: new Date(w.completed_at ?? w.started_at).getTime(),
 		}));
 
-	const cortexItems: ActivityItem[] = (cortexData ?? []).map((e: CortexEvent) => ({
+	const cortexItems: ActivityItem[] = (cortexData ?? []).map((e) => ({
 		id: `c-${e.id}`,
 		type: "cortex" as const,
 		title: e.summary,
-		agent: undefined,
+		agent: e._agent_id,
 		timestamp: new Date(e.created_at).getTime(),
 	}));
 

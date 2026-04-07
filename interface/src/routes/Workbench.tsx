@@ -159,7 +159,7 @@ export function Workbench() {
 	);
 
 	return (
-		<div className="flex h-full gap-[10px] bg-sidebar px-[10px] pb-[10px]">
+		<div className="flex h-full gap-[10px] bg-sidebar pr-[10px] pb-[10px]">
 			<WorkbenchSidebar
 				tree={tree}
 				totalCount={filteredWorkers.length}

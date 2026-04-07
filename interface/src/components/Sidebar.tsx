@@ -21,7 +21,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { api, getApiBase } from "@/api/client";
 import type { ChannelLiveState } from "@/hooks/useChannelLiveState";
 import { useAgentOrder } from "@/hooks/useAgentOrder";
-import { House, TreeStructure, Wrench, CheckSquare, GearSix, DotsThree, ChatCircleDots, Broadcast, Brain, Lightning, CalendarDots, SlidersHorizontal } from "@phosphor-icons/react";
+import { House, TreeStructure, Wrench, CheckSquare, GearSix, DotsThree, ChatCircleDots, Broadcast, Brain, Lightning, CalendarDots, SlidersHorizontal, BookBookmark } from "@phosphor-icons/react";
 import { CircleButton, SelectPill } from "@spacedrive/primitives";
 import { CreateAgentDialog } from "@/components/CreateAgentDialog";
 import { ProfileAvatar } from "@/components/ProfileAvatar";
@@ -139,6 +139,7 @@ const navItems = [
 	{ to: "/", icon: TreeStructure, label: "Org Chart", exact: true },
 	{ to: "/workbench", icon: Wrench, label: "Workbench", exact: true },
 	{ to: "/tasks", icon: CheckSquare, label: "Tasks", exact: true },
+	{ to: "/wiki", icon: BookBookmark, label: "Wiki", exact: true },
 ] as const;
 
 export function Sidebar({ liveStates: _liveStates }: SidebarProps) {
