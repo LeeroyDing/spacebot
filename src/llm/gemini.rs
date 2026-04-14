@@ -30,7 +30,7 @@ pub fn build_client(
     model_name: &str,
 ) -> Result<Gemini, CompletionError> {
     // gemini-rust expects model names prefixed with "models/" for custom models.
-    let model_str = if model_name.starts_with("models/") {
+    let model_str = if model_name.contains('/') {
         model_name.to_string()
     } else {
         format!("models/{model_name}")
@@ -163,9 +163,8 @@ fn append_message(
             Ok(builder.with_user_message(content))
         }
         Message::User { content } => {
-            // User messages can contain text and tool results
+            let mut current_builder = builder;
             let mut text_parts = Vec::new();
-            let mut tool_responses = Vec::new();
 
             for item in content.iter() {
                 match item {
@@ -173,6 +172,12 @@ fn append_message(
                         text_parts.push(text.text.clone());
                     }
                     rig::message::UserContent::ToolResult(tool_result) => {
+                        if !text_parts.is_empty() {
+                            let combined_text = text_parts.join("\n");
+                            current_builder = current_builder.with_user_message(combined_text);
+                            text_parts.clear();
+                        }
+
                         // Extract the text from the tool result content
                         let result_text = tool_result
                             .content
@@ -184,15 +189,24 @@ fn append_message(
                             .collect::<Vec<_>>()
                             .join("\n");
 
-                        let result_json: serde_json::Value = serde_json::from_str(&result_text)
+                        let mut result_json: serde_json::Value = serde_json::from_str(&result_text)
                             .unwrap_or_else(|_| serde_json::json!({ "result": result_text }));
+
+                        if !result_json.is_object() {
+                            result_json = serde_json::json!({ "result": result_json });
+                        }
 
                         let tool_name = tool_map
                             .get(&tool_result.id)
                             .cloned()
                             .unwrap_or_else(|| tool_result.id.clone());
 
-                        tool_responses.push((tool_name, result_json));
+                        let function_response_content = Content::function_response_json(&tool_name, result_json);
+                        let gemini_message = GeminiMessage {
+                            content: function_response_content.with_role(Role::User),
+                            role: Role::User,
+                        };
+                        current_builder = current_builder.with_message(gemini_message);
                     }
                     _ => {
                         return Err(CompletionError::RequestError(
@@ -204,22 +218,10 @@ fn append_message(
                 }
             }
 
-            let mut current_builder = builder;
-
-            // Add text as user message
+            // Add any remaining text as user message
             if !text_parts.is_empty() {
                 let combined_text = text_parts.join("\n");
                 current_builder = current_builder.with_user_message(combined_text);
-            }
-
-            // Add tool responses as function responses
-            for (name, result_json) in tool_responses {
-                let function_response_content = Content::function_response_json(&name, result_json);
-                let gemini_message = GeminiMessage {
-                    content: function_response_content.with_role(Role::User),
-                    role: Role::User,
-                };
-                current_builder = current_builder.with_message(gemini_message);
             }
 
             Ok(current_builder)
@@ -454,7 +456,7 @@ fn resolve_thinking_config(effort: &str) -> Option<gemini_rust::generation::mode
         "none" | "off" => Some(ThinkingConfig::new().with_thinking_budget(0)),
         "low" => Some(ThinkingConfig::new().with_thinking_level(ThinkingLevel::Low)),
         "medium" => Some(ThinkingConfig::new().with_thinking_level(ThinkingLevel::Medium)),
-        "high" => Some(ThinkingConfig::new().with_thinking_level(ThinkingLevel::High)),
+        "high" | "max" => Some(ThinkingConfig::new().with_thinking_level(ThinkingLevel::High)),
         "minimal" => Some(ThinkingConfig::new().with_thinking_level(ThinkingLevel::Minimal)),
         _ => {
             // Try parsing as a numeric budget
