@@ -386,9 +386,21 @@ fn convert_stream(
             }
         }
 
-        // Yield final response with usage info
-        let body = body_for_final.lock().unwrap().clone();
-        let usage = usage_for_final.lock().unwrap().take();
+        // Yield final response with usage info — recover gracefully from poisoned mutexes
+        let body = match body_for_final.lock() {
+            Ok(guard) => guard.clone(),
+            Err(poisoned) => {
+                tracing::warn!("accumulated_body mutex was poisoned, recovering inner value");
+                poisoned.into_inner().clone()
+            }
+        };
+        let usage = match usage_for_final.lock() {
+            Ok(mut guard) => guard.take(),
+            Err(poisoned) => {
+                tracing::warn!("accumulated_usage mutex was poisoned, recovering inner value");
+                poisoned.into_inner().take()
+            }
+        };
         yield RawStreamingChoice::FinalResponse(RawStreamingResponse { body, usage });
     };
 
