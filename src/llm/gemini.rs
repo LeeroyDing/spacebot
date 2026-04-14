@@ -99,8 +99,9 @@ fn build_content_request(
     }
 
     // Chat history — OneOrMany doesn't implement Iterator on &, use .iter()
+    let mut tool_map = std::collections::HashMap::new();
     for message in request.chat_history.iter() {
-        builder = append_message(builder, message)?;
+        builder = append_message(builder, message, &mut tool_map)?;
     }
 
     // Tools — FunctionDeclaration.parameters is pub(crate), so we serialize
@@ -152,6 +153,7 @@ fn build_content_request(
 fn append_message(
     builder: gemini_rust::generation::ContentBuilder,
     message: &Message,
+    tool_map: &mut std::collections::HashMap<String, String>,
 ) -> Result<gemini_rust::generation::ContentBuilder, CompletionError> {
     match message {
         Message::System { content } => {
@@ -185,7 +187,12 @@ fn append_message(
                         let result_json: serde_json::Value = serde_json::from_str(&result_text)
                             .unwrap_or_else(|_| serde_json::json!({ "result": result_text }));
 
-                        tool_responses.push((tool_result.id.clone(), result_json));
+                        let tool_name = tool_map
+                            .get(&tool_result.id)
+                            .cloned()
+                            .unwrap_or_else(|| tool_result.id.clone());
+
+                        tool_responses.push((tool_name, result_json));
                     }
                     _ => {
                         return Err(CompletionError::RequestError(
@@ -231,6 +238,7 @@ fn append_message(
                         });
                     }
                     AssistantContent::ToolCall(tool_call) => {
+                        tool_map.insert(tool_call.id.clone(), tool_call.function.name.clone());
                         parts.push(Part::FunctionCall {
                             function_call: gemini_rust::FunctionCall::new(
                                 tool_call.function.name.clone(),
@@ -239,7 +247,13 @@ fn append_message(
                             thought_signature: tool_call.signature.clone(),
                         });
                     }
-                    _ => {}
+                    _ => {
+                        return Err(CompletionError::RequestError(
+                            "Unsupported AssistantContent variant in Gemini provider"
+                                .to_string()
+                                .into(),
+                        ));
+                    }
                 }
             }
 
@@ -335,19 +349,20 @@ fn convert_stream(
                 CompletionError::ProviderError(format!("Gemini stream error: {error}"))
             })?;
 
+            match accumulated_body.try_lock() {
+                Ok(mut guard) => match serde_json::to_value(&chunk) {
+                    Ok(val) => *guard = val,
+                    Err(e) => tracing::warn!("Failed to serialize Gemini chunk for accounting: {e}"),
+                },
+                Err(e) => tracing::warn!("Failed to acquire lock for accumulated_body: {e}"),
+            }
+
             // Update usage from this chunk if present
             if let Some(usage_meta) = &chunk.usage_metadata {
                 let usage = convert_usage(usage_meta);
-                if let Ok(mut guard) = accumulated_usage.try_lock() {
-                    *guard = Some(usage);
-                }
-                if let Ok(mut guard) = accumulated_body.try_lock() {
-                    match serde_json::to_value(&chunk) {
-                        Ok(val) => *guard = val,
-                        Err(e) => {
-                            tracing::warn!("Failed to serialize Gemini chunk for accounting: {e}")
-                        }
-                    }
+                match accumulated_usage.try_lock() {
+                    Ok(mut guard) => *guard = Some(usage),
+                    Err(e) => tracing::warn!("Failed to acquire lock for accumulated_usage: {e}"),
                 }
             }
 
